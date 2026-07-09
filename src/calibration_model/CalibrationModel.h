@@ -17,10 +17,17 @@ struct CalibrationModel {
     std::vector<double> rightDistortion;
     std::vector<double> rotation;
     std::vector<double> translation;
+    std::vector<double> rectificationLeft;
+    std::vector<double> rectificationRight;
+    std::vector<double> projectionLeft;
+    std::vector<double> projectionRight;
     std::vector<double> qMatrix;
+    std::vector<std::string> matchedKeys;
     std::string sourcePath;
 };
 
 Status loadCalibrationResultJson(const std::string& path, CalibrationModel& model);
+Status validateCalibrationImageSize(const CalibrationModel& model, int expectedWidth, int expectedHeight);
+std::string summarizeCalibration(const CalibrationModel& model);
 
 } // namespace reconstruct_one_frame

@@ -66,6 +66,9 @@ Status ReconstructEngine::init(const InitOptions& options)
     PipelineOptions pipelineOptions;
     pipelineOptions.dryRun = options.dryRun;
     pipelineOptions.dryRunNoCalib = options.dryRunNoCalib;
+    pipelineOptions.writePly = options.writePly;
+    pipelineOptions.outputDirectory = options.outputDirectory;
+    pipelineOptions.compareLegacyPlyPath = options.compareLegacyPlyPath;
     status = impl_->pipeline.initialize(impl_->config, impl_->calibration, pipelineOptions);
     impl_->initialized = status.ok();
     return status;

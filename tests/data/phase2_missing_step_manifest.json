@@ -1,0 +1,13 @@
+{
+  "frameId": 3,
+  "width": 4,
+  "height": 4,
+  "elementType": "uint8",
+  "channels": 1,
+  "leftStripes": [
+    {"frequencyIndex": 0, "phaseStepIndex": 0, "projectorIndex": 0, "fill": 32}
+  ],
+  "rightStripes": [
+    {"frequencyIndex": 0, "phaseStepIndex": 0, "projectorIndex": 0, "fill": 48}
+  ]
+}

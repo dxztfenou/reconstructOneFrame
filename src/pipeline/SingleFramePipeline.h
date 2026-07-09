@@ -2,6 +2,7 @@
 
 #include "calibration_model/CalibrationModel.h"
 #include "config/ReconsConfig.h"
+#include "image/ImagePreprocessor.h"
 #include "image/ImageValidator.h"
 
 namespace reconstruct_one_frame {
@@ -9,6 +10,9 @@ namespace reconstruct_one_frame {
 struct PipelineOptions {
     bool dryRun = true;
     bool dryRunNoCalib = false;
+    bool writePly = false;
+    std::string outputDirectory;
+    std::string compareLegacyPlyPath;
 };
 
 class SingleFramePipeline {

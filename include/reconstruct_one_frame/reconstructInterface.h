@@ -24,20 +24,33 @@ enum class StatusCode {
     InputMissing,
     InputEmptyImage,
     InputBlackImage,
+    InputSaturatedImage,
     InputSizeMismatch,
     InputTypeUnsupported,
     InputStrideInvalid,
     InputInvalidValue,
+    InputMissingLeftStripes,
+    InputMissingRightStripes,
+    InputFrequencyPlanMismatch,
+    InputPhaseStepMissing,
+    InputCameraSideMismatch,
+    InputNonFinitePixel,
+    InputManifestMissing,
+    InputManifestParseFailed,
     ConfigMissing,
     ConfigParseFailed,
     ConfigInvalidValue,
     CalibrationMissing,
     CalibrationParseFailed,
     CalibrationInvalid,
+    CalibrationFieldMissing,
+    CalibrationMatrixShapeInvalid,
+    CalibrationImageSizeMismatch,
     CudaInitFailed,
     CudaKernelFailed,
     DataQualityInsufficient,
     PhaseFailed,
+    PhaseQualityInsufficient,
     UnwrapFailed,
     MatchingFailed,
     ReconstructionInsufficient,
@@ -102,6 +115,15 @@ struct StageStats {
     std::size_t rejectedImageCount = 0;
     std::size_t checkedPixels = 0;
     std::size_t blackPixels = 0;
+    std::size_t saturatedPixels = 0;
+    std::size_t nonFinitePixels = 0;
+    std::size_t cudaComputedPixels = 0;
+    double blackPixelRatio = 0.0;
+    double saturatedPixelRatio = 0.0;
+    double minPixelValue = 0.0;
+    double maxPixelValue = 0.0;
+    double meanPixelValue = 0.0;
+    bool skipped = false;
     bool notComputed = false;
 };
 
@@ -111,13 +133,22 @@ struct FrameResult {
     bool depthComputed = false;
     bool normalComputed = false;
     bool qualityComputed = false;
+    bool wrappedPhaseComputed = false;
+    bool unwrappedPhaseComputed = false;
+    std::size_t pointCloudVertexCount = 0;
+    std::string outputPointCloudPath;
+    std::string legacyComparisonSummary;
+    std::string qualitySummary;
 };
 
 struct InitOptions {
     std::string configPath;
     std::string calibrationPath;
+    std::string outputDirectory;
+    std::string compareLegacyPlyPath;
     bool dryRun = false;
     bool dryRunNoCalib = false;
+    bool writePly = false;
 };
 
 class ROF_API ReconstructEngine {

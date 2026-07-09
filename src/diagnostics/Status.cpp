@@ -18,6 +18,8 @@ const char* statusCodeName(StatusCode code) noexcept
         return "InputEmptyImage";
     case StatusCode::InputBlackImage:
         return "InputBlackImage";
+    case StatusCode::InputSaturatedImage:
+        return "InputSaturatedImage";
     case StatusCode::InputSizeMismatch:
         return "InputSizeMismatch";
     case StatusCode::InputTypeUnsupported:
@@ -26,6 +28,22 @@ const char* statusCodeName(StatusCode code) noexcept
         return "InputStrideInvalid";
     case StatusCode::InputInvalidValue:
         return "InputInvalidValue";
+    case StatusCode::InputMissingLeftStripes:
+        return "InputMissingLeftStripes";
+    case StatusCode::InputMissingRightStripes:
+        return "InputMissingRightStripes";
+    case StatusCode::InputFrequencyPlanMismatch:
+        return "InputFrequencyPlanMismatch";
+    case StatusCode::InputPhaseStepMissing:
+        return "InputPhaseStepMissing";
+    case StatusCode::InputCameraSideMismatch:
+        return "InputCameraSideMismatch";
+    case StatusCode::InputNonFinitePixel:
+        return "InputNonFinitePixel";
+    case StatusCode::InputManifestMissing:
+        return "InputManifestMissing";
+    case StatusCode::InputManifestParseFailed:
+        return "InputManifestParseFailed";
     case StatusCode::ConfigMissing:
         return "ConfigMissing";
     case StatusCode::ConfigParseFailed:
@@ -38,6 +56,12 @@ const char* statusCodeName(StatusCode code) noexcept
         return "CalibrationParseFailed";
     case StatusCode::CalibrationInvalid:
         return "CalibrationInvalid";
+    case StatusCode::CalibrationFieldMissing:
+        return "CalibrationFieldMissing";
+    case StatusCode::CalibrationMatrixShapeInvalid:
+        return "CalibrationMatrixShapeInvalid";
+    case StatusCode::CalibrationImageSizeMismatch:
+        return "CalibrationImageSizeMismatch";
     case StatusCode::CudaInitFailed:
         return "CudaInitFailed";
     case StatusCode::CudaKernelFailed:
@@ -46,6 +70,8 @@ const char* statusCodeName(StatusCode code) noexcept
         return "DataQualityInsufficient";
     case StatusCode::PhaseFailed:
         return "PhaseFailed";
+    case StatusCode::PhaseQualityInsufficient:
+        return "PhaseQualityInsufficient";
     case StatusCode::UnwrapFailed:
         return "UnwrapFailed";
     case StatusCode::MatchingFailed:

@@ -1,0 +1,41 @@
+{
+  "frameId": 4,
+  "width": 4,
+  "height": 4,
+  "elementType": "uint8",
+  "channels": 1,
+  "leftStripes": [
+    {"frequencyIndex": 0, "phaseStepIndex": 0, "projectorIndex": 0, "fill": 64},
+    {"frequencyIndex": 0, "phaseStepIndex": 1, "projectorIndex": 0, "fill": 64},
+    {"frequencyIndex": 0, "phaseStepIndex": 2, "projectorIndex": 0, "fill": 64},
+    {"frequencyIndex": 0, "phaseStepIndex": 3, "projectorIndex": 0, "fill": 64},
+    {"frequencyIndex": 0, "phaseStepIndex": 4, "projectorIndex": 0, "fill": 64},
+    {"frequencyIndex": 1, "phaseStepIndex": 0, "projectorIndex": 0, "fill": 64},
+    {"frequencyIndex": 1, "phaseStepIndex": 1, "projectorIndex": 0, "fill": 64},
+    {"frequencyIndex": 1, "phaseStepIndex": 2, "projectorIndex": 0, "fill": 64},
+    {"frequencyIndex": 1, "phaseStepIndex": 3, "projectorIndex": 0, "fill": 64},
+    {"frequencyIndex": 1, "phaseStepIndex": 4, "projectorIndex": 0, "fill": 64},
+    {"frequencyIndex": 2, "phaseStepIndex": 0, "projectorIndex": 0, "fill": 64},
+    {"frequencyIndex": 2, "phaseStepIndex": 1, "projectorIndex": 0, "fill": 64},
+    {"frequencyIndex": 2, "phaseStepIndex": 2, "projectorIndex": 0, "fill": 64},
+    {"frequencyIndex": 2, "phaseStepIndex": 3, "projectorIndex": 0, "fill": 64},
+    {"frequencyIndex": 2, "phaseStepIndex": 4, "projectorIndex": 0, "fill": 64}
+  ],
+  "rightStripes": [
+    {"frequencyIndex": 0, "phaseStepIndex": 0, "projectorIndex": 0, "fill": 64},
+    {"frequencyIndex": 0, "phaseStepIndex": 1, "projectorIndex": 0, "fill": 64},
+    {"frequencyIndex": 0, "phaseStepIndex": 2, "projectorIndex": 0, "fill": 64},
+    {"frequencyIndex": 0, "phaseStepIndex": 3, "projectorIndex": 0, "fill": 64},
+    {"frequencyIndex": 0, "phaseStepIndex": 4, "projectorIndex": 0, "fill": 64},
+    {"frequencyIndex": 1, "phaseStepIndex": 0, "projectorIndex": 0, "fill": 64},
+    {"frequencyIndex": 1, "phaseStepIndex": 1, "projectorIndex": 0, "fill": 64},
+    {"frequencyIndex": 1, "phaseStepIndex": 2, "projectorIndex": 0, "fill": 64},
+    {"frequencyIndex": 1, "phaseStepIndex": 3, "projectorIndex": 0, "fill": 64},
+    {"frequencyIndex": 1, "phaseStepIndex": 4, "projectorIndex": 0, "fill": 64},
+    {"frequencyIndex": 2, "phaseStepIndex": 0, "projectorIndex": 0, "fill": 64},
+    {"frequencyIndex": 2, "phaseStepIndex": 1, "projectorIndex": 0, "fill": 64},
+    {"frequencyIndex": 2, "phaseStepIndex": 2, "projectorIndex": 0, "fill": 64},
+    {"frequencyIndex": 2, "phaseStepIndex": 3, "projectorIndex": 0, "fill": 64},
+    {"frequencyIndex": 2, "phaseStepIndex": 4, "projectorIndex": 0, "fill": 64}
+  ]
+}

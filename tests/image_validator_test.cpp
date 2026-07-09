@@ -46,7 +46,7 @@ int main()
     StageStats stats;
     StripeFrameGroup empty;
     Status status = validateStripeFrameGroup(empty, stats);
-    require(status.code == StatusCode::InputMissing, "expected InputMissing for empty frame");
+    require(status.code == StatusCode::InputMissingLeftStripes, "expected InputMissingLeftStripes for empty frame");
 
     std::vector<unsigned char> left(16, 1);
     std::vector<unsigned char> right(16, 2);

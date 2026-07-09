@@ -18,23 +18,34 @@ void require(bool condition, const char* message)
 
 StripeFrameGroup makeFrame()
 {
-    static std::vector<unsigned char> left(16, 17);
-    static std::vector<unsigned char> right(16, 19);
-
-    ImageView leftView;
-    leftView.data = left.data();
-    leftView.width = 4;
-    leftView.height = 4;
-    leftView.channels = 1;
-    leftView.strideBytes = 4;
-    leftView.elementType = ImageElementType::UInt8;
-
-    ImageView rightView = leftView;
-    rightView.data = right.data();
+    static std::vector<std::vector<unsigned char>> leftBuffers;
+    static std::vector<std::vector<unsigned char>> rightBuffers;
+    leftBuffers.clear();
+    rightBuffers.clear();
+    leftBuffers.reserve(15);
+    rightBuffers.reserve(15);
 
     StripeFrameGroup frame;
-    frame.leftStripes.push_back({CameraSide::Left, 0, 0, 0, leftView});
-    frame.rightStripes.push_back({CameraSide::Right, 0, 0, 0, rightView});
+    for (int frequency = 0; frequency < 3; ++frequency) {
+        for (int step = 0; step < 5; ++step) {
+            leftBuffers.emplace_back(16, static_cast<unsigned char>(17 + frequency * 10 + step));
+            rightBuffers.emplace_back(16, static_cast<unsigned char>(47 + frequency * 10 + step));
+
+            ImageView leftView;
+            leftView.data = leftBuffers.back().data();
+            leftView.width = 4;
+            leftView.height = 4;
+            leftView.channels = 1;
+            leftView.strideBytes = 4;
+            leftView.elementType = ImageElementType::UInt8;
+
+            ImageView rightView = leftView;
+            rightView.data = rightBuffers.back().data();
+
+            frame.leftStripes.push_back({CameraSide::Left, frequency, step, 0, leftView});
+            frame.rightStripes.push_back({CameraSide::Right, frequency, step, 0, rightView});
+        }
+    }
     return frame;
 }
 
@@ -56,8 +67,15 @@ int main()
     require(!result.depthComputed, "depth must remain notComputed");
     require(!result.normalComputed, "normal must remain notComputed");
     require(!result.qualityComputed, "quality must remain notComputed");
-    require(result.stats.size() == 2, "expected validation and dry_run_compute stats");
-    require(result.stats[1].status.code == StatusCode::NotComputed, "expected compute stage NotComputed marker");
+    require(result.stats.size() == 6, "expected phase4 dry-run stages");
+    require(result.stats[0].stageName == "input_contract_validation", "expected phase2 input contract stage");
+    require(result.stats[3].stageName == "wrapped_phase_compute_cuda", "expected CUDA wrapped phase stage");
+    require(result.stats[3].cudaComputedPixels > 0, "expected CUDA wrapped phase pixels");
+    require(result.wrappedPhaseComputed, "expected wrapped phase computed marker");
+    require(result.stats[4].stageName == "phase_unwrap_cuda", "expected CUDA unwrap stage");
+    require(result.stats[4].cudaComputedPixels > 0, "expected CUDA unwrap pixels");
+    require(result.unwrappedPhaseComputed, "expected unwrapped phase computed marker");
+    require(result.stats[5].status.code == StatusCode::NotComputed, "expected downstream stage NotComputed marker");
 
     return EXIT_SUCCESS;
 }

@@ -1,7 +1,10 @@
 #include "reconstruct_one_frame/reconstructInterface.h"
 
+#include "diagnostics/DiagnosticSummary.h"
+#include "image/InputManifest.h"
 #include "logging/LogSession.h"
 
+#include <chrono>
 #include <cstdlib>
 #include <iostream>
 #include <string>
@@ -14,12 +17,16 @@ using namespace reconstruct_one_frame;
 void printHelp()
 {
     std::cout
-        << "reconstructSample phase-1 dry-run sample\n"
+        << "reconstructSample phase-6 CUDA reconstruction and quality-evaluation sample\n"
         << "Usage:\n"
-        << "  reconstructSample --config <path> [--calib <path>] [--dry-run] [--dry-run-no-calib]\n"
+        << "  reconstructSample --config <path> [--calib <path>] [--input-manifest <path>] [--single-stripe-root <path>] [--group <n>] [--source-img-root <path>] [--frame <n>|--first <n> --last <n>] [--output <dir>] [--compare-legacy <ply>] [--dry-run] [--dry-run-no-calib]\n"
         << "  reconstructSample --help\n\n"
         << "Notes:\n"
-        << "  This sample does not read real scan directories, call Legacy DLLs, or write PLY/EXR/PNG.\n";
+        << "  Phase 6 writes depth_points.ply, compares coordinates, and reports frame quality.\n"
+        << "  This sample does not call Legacy DLLs, TensorRT, or DSSI.\n"
+        << "  --input-manifest builds in-memory test stripes only.\n"
+        << "  --single-stripe-root reads BMP stripes from <root>\\<group>\\L and <root>\\<group>\\R.\n"
+        << "  --source-img-root reads BMP stripes from <root>\\<frame>\\SourceImg\\L0.bmp/R0.bmp.\n";
 }
 
 bool readOptionValue(int argc, char** argv, int& index, std::string& value)
@@ -33,24 +40,35 @@ bool readOptionValue(int argc, char** argv, int& index, std::string& value)
 
 StripeFrameGroup makeSyntheticFrame()
 {
-    static std::vector<unsigned char> left(16, 32);
-    static std::vector<unsigned char> right(16, 48);
-
-    ImageView leftView;
-    leftView.data = left.data();
-    leftView.width = 4;
-    leftView.height = 4;
-    leftView.channels = 1;
-    leftView.strideBytes = 4;
-    leftView.elementType = ImageElementType::UInt8;
-
-    ImageView rightView = leftView;
-    rightView.data = right.data();
+    static std::vector<std::vector<unsigned char>> leftBuffers;
+    static std::vector<std::vector<unsigned char>> rightBuffers;
+    leftBuffers.clear();
+    rightBuffers.clear();
+    leftBuffers.reserve(15);
+    rightBuffers.reserve(15);
 
     StripeFrameGroup frame;
     frame.frameId = 1;
-    frame.leftStripes.push_back({CameraSide::Left, 0, 0, 0, leftView});
-    frame.rightStripes.push_back({CameraSide::Right, 0, 0, 0, rightView});
+    for (int frequency = 0; frequency < 3; ++frequency) {
+        for (int step = 0; step < 5; ++step) {
+            leftBuffers.emplace_back(16, static_cast<unsigned char>(32 + frequency * 10 + step));
+            rightBuffers.emplace_back(16, static_cast<unsigned char>(62 + frequency * 10 + step));
+
+            ImageView leftView;
+            leftView.data = leftBuffers.back().data();
+            leftView.width = 4;
+            leftView.height = 4;
+            leftView.channels = 1;
+            leftView.strideBytes = 4;
+            leftView.elementType = ImageElementType::UInt8;
+
+            ImageView rightView = leftView;
+            rightView.data = rightBuffers.back().data();
+
+            frame.leftStripes.push_back({CameraSide::Left, frequency, step, 0, leftView});
+            frame.rightStripes.push_back({CameraSide::Right, frequency, step, 0, rightView});
+        }
+    }
     return frame;
 }
 
@@ -66,6 +84,13 @@ int main(int argc, char** argv)
     InitOptions options;
     options.dryRun = false;
     options.dryRunNoCalib = false;
+    std::string inputManifestPath;
+    std::string singleStripeRoot;
+    std::string sourceImgRoot;
+    int singleStripeGroup = 1;
+    int sourceImgFrame = 0;
+    int sourceImgFirst = -1;
+    int sourceImgLast = -1;
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -87,6 +112,78 @@ int main(int argc, char** argv)
             }
             continue;
         }
+        if (arg == "--input-manifest") {
+            if (!readOptionValue(argc, argv, i, inputManifestPath)) {
+                std::cerr << "--input-manifest requires a path\n";
+                return EXIT_FAILURE;
+            }
+            continue;
+        }
+        if (arg == "--output") {
+            if (!readOptionValue(argc, argv, i, options.outputDirectory)) {
+                std::cerr << "--output requires a directory\n";
+                return EXIT_FAILURE;
+            }
+            options.writePly = true;
+            continue;
+        }
+        if (arg == "--compare-legacy") {
+            if (!readOptionValue(argc, argv, i, options.compareLegacyPlyPath)) {
+                std::cerr << "--compare-legacy requires a PLY path\n";
+                return EXIT_FAILURE;
+            }
+            continue;
+        }
+        if (arg == "--single-stripe-root") {
+            if (!readOptionValue(argc, argv, i, singleStripeRoot)) {
+                std::cerr << "--single-stripe-root requires a path\n";
+                return EXIT_FAILURE;
+            }
+            continue;
+        }
+        if (arg == "--group") {
+            std::string groupText;
+            if (!readOptionValue(argc, argv, i, groupText)) {
+                std::cerr << "--group requires a number\n";
+                return EXIT_FAILURE;
+            }
+            singleStripeGroup = std::stoi(groupText);
+            continue;
+        }
+        if (arg == "--source-img-root") {
+            if (!readOptionValue(argc, argv, i, sourceImgRoot)) {
+                std::cerr << "--source-img-root requires a path\n";
+                return EXIT_FAILURE;
+            }
+            continue;
+        }
+        if (arg == "--frame") {
+            std::string frameText;
+            if (!readOptionValue(argc, argv, i, frameText)) {
+                std::cerr << "--frame requires a number\n";
+                return EXIT_FAILURE;
+            }
+            sourceImgFrame = std::stoi(frameText);
+            continue;
+        }
+        if (arg == "--first") {
+            std::string frameText;
+            if (!readOptionValue(argc, argv, i, frameText)) {
+                std::cerr << "--first requires a number\n";
+                return EXIT_FAILURE;
+            }
+            sourceImgFirst = std::stoi(frameText);
+            continue;
+        }
+        if (arg == "--last") {
+            std::string frameText;
+            if (!readOptionValue(argc, argv, i, frameText)) {
+                std::cerr << "--last requires a number\n";
+                return EXIT_FAILURE;
+            }
+            sourceImgLast = std::stoi(frameText);
+            continue;
+        }
         if (arg == "--dry-run") {
             options.dryRun = true;
             continue;
@@ -106,6 +203,21 @@ int main(int argc, char** argv)
         std::cerr << "--config is required unless --help is used\n";
         return EXIT_FAILURE;
     }
+    const int explicitInputCount = (!inputManifestPath.empty() ? 1 : 0) +
+        (!singleStripeRoot.empty() ? 1 : 0) +
+        (!sourceImgRoot.empty() ? 1 : 0);
+    if (explicitInputCount > 1) {
+        std::cerr << "Use only one of --input-manifest, --single-stripe-root, or --source-img-root\n";
+        return EXIT_FAILURE;
+    }
+    if (sourceImgRoot.empty() && (sourceImgFirst >= 0 || sourceImgLast >= 0)) {
+        std::cerr << "--first/--last are only supported with --source-img-root\n";
+        return EXIT_FAILURE;
+    }
+
+    ManifestFrame manifestFrame;
+    StripeFrameGroup syntheticFrame;
+    const StripeFrameGroup* frameToRun = nullptr;
 
     LogSession logSession;
     if (!logSession.start("reconstructSample", "logs", LogLevel::Info, 10)) {
@@ -123,20 +235,93 @@ int main(int argc, char** argv)
         return statusToExitCode(status.code);
     }
 
-    FrameResult result = engine.run(makeSyntheticFrame());
-    std::cout << "status=" << statusCodeName(result.status.code) << "\n";
-    for (const StageStats& stat : result.stats) {
-        std::cout << "stage=" << stat.stageName
-                  << ", status=" << statusCodeName(stat.status.code)
-                  << ", validImages=" << stat.validImageCount
-                  << ", rejectedImages=" << stat.rejectedImageCount
-                  << ", notComputed=" << (stat.notComputed ? "true" : "false")
-                  << "\n";
+    if (!sourceImgRoot.empty()) {
+        ReconsConfig config;
+        Status frameStatus = loadReconsConfig(options.configPath, config);
+        if (!frameStatus.ok()) {
+            std::cout << "status=" << statusCodeName(frameStatus.code) << "\n"
+                      << "module=" << frameStatus.module << "\n"
+                      << "message=" << frameStatus.message << "\n";
+            return statusToExitCode(frameStatus.code);
+        }
+
+        const int firstFrame = sourceImgFirst >= 0 ? sourceImgFirst : sourceImgFrame;
+        const int lastFrame = sourceImgLast >= 0 ? sourceImgLast : firstFrame;
+        const int step = lastFrame >= firstFrame ? 1 : -1;
+        int exitCode = EXIT_SUCCESS;
+        for (int frameIndex = firstFrame;; frameIndex += step) {
+            frameStatus = loadSourceImgFrameDirectory(sourceImgRoot, config, frameIndex, manifestFrame);
+            if (!frameStatus.ok()) {
+                std::cout << "status=" << statusCodeName(frameStatus.code) << "\n"
+                          << "module=" << frameStatus.module << "\n"
+                          << "message=" << frameStatus.message << "\n";
+                return statusToExitCode(frameStatus.code);
+            }
+
+            const auto runStart = std::chrono::steady_clock::now();
+            FrameResult result = engine.run(manifestFrame.frame);
+            const double runElapsedMs = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - runStart).count();
+            std::cout << formatFrameResultSummary(manifestFrame.frame.frameId, result);
+            std::cout << "runElapsedMs=" << runElapsedMs << "\n";
+            if (!result.status.ok()) {
+                exitCode = statusToExitCode(result.status.code);
+            }
+
+            if (frameIndex == lastFrame) {
+                break;
+            }
+        }
+        std::cout << "log=" << logSession.path().string() << "\n";
+        return exitCode;
     }
-    std::cout << "depthComputed=" << (result.depthComputed ? "true" : "false") << "\n"
-              << "normalComputed=" << (result.normalComputed ? "true" : "false") << "\n"
-              << "qualityComputed=" << (result.qualityComputed ? "true" : "false") << "\n"
-              << "log=" << logSession.path().string() << "\n";
+
+    if (!singleStripeRoot.empty()) {
+        ReconsConfig config;
+        Status frameStatus = loadReconsConfig(options.configPath, config);
+        if (!frameStatus.ok()) {
+            std::cout << "status=" << statusCodeName(frameStatus.code) << "\n"
+                      << "module=" << frameStatus.module << "\n"
+                      << "message=" << frameStatus.message << "\n";
+            return statusToExitCode(frameStatus.code);
+        }
+        frameStatus = loadSingleStripeBmpDirectory(singleStripeRoot, config, singleStripeGroup, manifestFrame);
+        if (!frameStatus.ok()) {
+            std::cout << "status=" << statusCodeName(frameStatus.code) << "\n"
+                      << "module=" << frameStatus.module << "\n"
+                      << "message=" << frameStatus.message << "\n";
+            return statusToExitCode(frameStatus.code);
+        }
+        frameToRun = &manifestFrame.frame;
+    } else if (!inputManifestPath.empty()) {
+        InputManifest manifest;
+        Status manifestStatus = loadInputManifest(inputManifestPath, manifest);
+        if (!manifestStatus.ok()) {
+            std::cout << "status=" << statusCodeName(manifestStatus.code) << "\n"
+                      << "module=" << manifestStatus.module << "\n"
+                      << "message=" << manifestStatus.message << "\n";
+            return statusToExitCode(manifestStatus.code);
+        }
+        manifestStatus = buildFrameFromManifest(manifest, manifestFrame);
+        if (!manifestStatus.ok()) {
+            std::cout << "status=" << statusCodeName(manifestStatus.code) << "\n"
+                      << "module=" << manifestStatus.module << "\n"
+                      << "message=" << manifestStatus.message << "\n";
+            return statusToExitCode(manifestStatus.code);
+        }
+        frameToRun = &manifestFrame.frame;
+    } else {
+        syntheticFrame = makeSyntheticFrame();
+        frameToRun = &syntheticFrame;
+    }
+
+    const auto runStart = std::chrono::steady_clock::now();
+    FrameResult result = engine.run(*frameToRun);
+    const double runElapsedMs = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - runStart).count();
+    std::cout << formatFrameResultSummary(frameToRun->frameId, result);
+    std::cout << "runElapsedMs=" << runElapsedMs << "\n";
+    std::cout << "log=" << logSession.path().string() << "\n";
 
     return statusToExitCode(result.status.code);
 }

@@ -1,8 +1,15 @@
 #include "pipeline/SingleFramePipeline.h"
 
+#include "calibration_model/CalibrationModel.h"
 #include "logging/LogSession.h"
+#include "io/PlyIO.h"
+#include "phase/PhaseUnwrapper.h"
+#include "phase/WrappedPhaseComputer.h"
+#include "quality/PointReliability.h"
+#include "reconstruction/PointCloudReconstructor.h"
 
 #include <chrono>
+#include <filesystem>
 #include <sstream>
 
 namespace reconstruct_one_frame {
@@ -39,7 +46,9 @@ FrameResult SingleFramePipeline::run(const StripeFrameGroup& frame) const
 
     const auto start = std::chrono::steady_clock::now();
     StageStats validationStats;
-    Status status = validateStripeFrameGroup(frame, validationStats);
+    validationStats.stageName = "input_contract_validation";
+    Status status = validateStripeFrameGroup(frame, config_, validationStats);
+    validationStats.stageName = "input_contract_validation";
     validationStats.elapsedMs = elapsedMsSince(start);
     result.stats.push_back(validationStats);
     if (!status.ok()) {
@@ -48,17 +57,142 @@ FrameResult SingleFramePipeline::run(const StripeFrameGroup& frame) const
         return result;
     }
 
-    StageStats computeStats;
-    computeStats.stageName = "dry_run_compute";
-    computeStats.status = {StatusCode::NotComputed, "SingleFramePipeline", "phase/matching/reconstruction are intentionally not computed in phase 1 dry-run"};
-    computeStats.notComputed = true;
-    result.stats.push_back(computeStats);
+    StageStats calibrationStats;
+    calibrationStats.stageName = "calibration_contract_validation";
+    auto stageStart = std::chrono::steady_clock::now();
+    if (options_.dryRunNoCalib) {
+        calibrationStats.skipped = true;
+        calibrationStats.status = {};
+    } else {
+        status = validateCalibrationImageSize(calibration_, config_.imageWidth, config_.imageHeight);
+        calibrationStats.status = status;
+        calibrationStats.elapsedMs = elapsedMsSince(stageStart);
+        if (!status.ok()) {
+            result.stats.push_back(calibrationStats);
+            result.status = status;
+            logWarn("pipeline dry-run failed at calibration contract: " + std::string(statusCodeName(status.code)) + " " + status.message);
+            return result;
+        }
+    }
+    calibrationStats.elapsedMs = elapsedMsSince(stageStart);
+    result.stats.push_back(calibrationStats);
 
-    result.depthComputed = false;
-    result.normalComputed = false;
-    result.qualityComputed = false;
+    const CalibrationModel* calibration = options_.dryRunNoCalib ? nullptr : &calibration_;
+    stageStart = std::chrono::steady_clock::now();
+    PreprocessResult preprocess = buildPreprocessDryRunPlan(frame, calibration);
+    preprocess.stats.elapsedMs = elapsedMsSince(stageStart);
+    result.stats.push_back(preprocess.stats);
+    if (!preprocess.status.ok()) {
+        result.status = preprocess.status;
+        logWarn("pipeline dry-run failed at image preprocess: " + std::string(statusCodeName(preprocess.status.code)) + " " + preprocess.status.message);
+        return result;
+    }
+
+    stageStart = std::chrono::steady_clock::now();
+    WrappedPhaseResult wrappedPhase = computeWrappedPhaseCuda(frame, config_);
+    wrappedPhase.stats.elapsedMs = elapsedMsSince(stageStart);
+    result.stats.push_back(wrappedPhase.stats);
+    if (!wrappedPhase.status.ok()) {
+        result.status = wrappedPhase.status;
+        logWarn("pipeline dry-run failed at wrapped phase compute: " + std::string(statusCodeName(wrappedPhase.status.code)) + " " + wrappedPhase.status.message);
+        return result;
+    }
+    result.wrappedPhaseComputed = true;
+
+    stageStart = std::chrono::steady_clock::now();
+    UnwrappedPhaseResult unwrappedPhase = computeUnwrappedPhaseCuda(wrappedPhase, config_);
+    unwrappedPhase.stats.elapsedMs = elapsedMsSince(stageStart);
+    result.stats.push_back(unwrappedPhase.stats);
+    if (!unwrappedPhase.status.ok()) {
+        result.status = unwrappedPhase.status;
+        logWarn("pipeline dry-run failed at phase unwrap: " + std::string(statusCodeName(unwrappedPhase.status.code)) + " " + unwrappedPhase.status.message);
+        return result;
+    }
+    result.unwrappedPhaseComputed = true;
+
+    if (options_.dryRun || options_.dryRunNoCalib) {
+        StageStats computeStats;
+        computeStats.stageName = "downstream_not_computed";
+        computeStats.status = {StatusCode::NotComputed, "SingleFramePipeline", "matching/reconstruction are intentionally not computed during dry-run"};
+        computeStats.notComputed = true;
+        result.stats.push_back(computeStats);
+        result.depthComputed = false;
+        result.normalComputed = false;
+        result.qualityComputed = false;
+        result.status = {};
+        logInfo("pipeline dry-run summary: StatusCode::Ok, wrapped and unwrapped phase computed, reconstruction notComputed");
+        return result;
+    }
+
+    stageStart = std::chrono::steady_clock::now();
+    PointCloudReconstructionResult pointCloud = reconstructPointCloudCuda(unwrappedPhase, calibration_, config_, frame);
+    pointCloud.stats.elapsedMs = elapsedMsSince(stageStart);
+    result.stats.push_back(pointCloud.stats);
+    if (!pointCloud.status.ok()) {
+        result.status = pointCloud.status;
+        logWarn("pipeline failed at point cloud reconstruction: " + std::string(statusCodeName(pointCloud.status.code)) + " " + pointCloud.status.message);
+        return result;
+    }
+    result.depthComputed = true;
+    result.normalComputed = true;
+    result.pointCloudVertexCount = pointCloud.vertices.size();
+
+    stageStart = std::chrono::steady_clock::now();
+    PointReliabilityResult quality = evaluatePointReliability(pointCloud, config_);
+    quality.stats.elapsedMs = elapsedMsSince(stageStart);
+    result.stats.push_back(quality.stats);
+    if (!quality.status.ok()) {
+        result.status = quality.status;
+        logWarn("pipeline failed at quality evaluation: " + std::string(statusCodeName(quality.status.code)) + " " + quality.status.message);
+        return result;
+    }
+    result.qualityComputed = true;
+    result.qualitySummary = quality.summary;
+
+    if (options_.writePly && !options_.outputDirectory.empty()) {
+        StageStats outputStats;
+        outputStats.stageName = "ply_output";
+        stageStart = std::chrono::steady_clock::now();
+        const std::filesystem::path outputPath = std::filesystem::path(options_.outputDirectory) / "depth_points.ply";
+        status = writeAsciiPly(outputPath.string(), pointCloud.vertices);
+        outputStats.elapsedMs = elapsedMsSince(stageStart);
+        outputStats.status = status;
+        outputStats.validImageCount = pointCloud.vertices.size();
+        if (!status.ok()) {
+            result.stats.push_back(outputStats);
+            result.status = status;
+            logWarn("pipeline failed at PLY output: " + std::string(statusCodeName(status.code)) + " " + status.message);
+            return result;
+        }
+        result.outputPointCloudPath = outputPath.string();
+        result.stats.push_back(outputStats);
+    }
+
+    if (!options_.compareLegacyPlyPath.empty()) {
+        StageStats compareStats;
+        compareStats.stageName = "legacy_point_cloud_compare";
+        stageStart = std::chrono::steady_clock::now();
+        PlyComparisonResult comparison = comparePointCloudToLegacy(pointCloud.vertices, options_.compareLegacyPlyPath);
+        compareStats.elapsedMs = elapsedMsSince(stageStart);
+        compareStats.status = comparison.status;
+        compareStats.validImageCount = comparison.generatedVertexCount;
+        compareStats.rejectedImageCount = comparison.legacyVertexCount > comparison.matchedLegacyCount
+            ? comparison.legacyVertexCount - comparison.matchedLegacyCount
+            : 0;
+        compareStats.meanPixelValue = comparison.nearestRmsDistanceMm;
+        if (!comparison.status.ok()) {
+            result.stats.push_back(compareStats);
+            result.status = comparison.status;
+            logWarn("pipeline failed at legacy PLY comparison: " + std::string(statusCodeName(comparison.status.code)) + " " + comparison.status.message);
+            return result;
+        }
+        result.legacyComparisonSummary = formatPlyComparison(comparison);
+        result.stats.push_back(compareStats);
+    }
+
     result.status = {};
-    logInfo("pipeline dry-run summary: StatusCode::Ok, depth/normal/quality notComputed");
+    logInfo("pipeline phase-6 summary: StatusCode::Ok, point cloud vertices=" + std::to_string(result.pointCloudVertexCount) +
+            ", qualityComputed=" + std::string(result.qualityComputed ? "true" : "false"));
     return result;
 }
 

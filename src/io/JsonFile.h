@@ -18,6 +18,8 @@ public:
     [[nodiscard]] bool getBool(const std::string& key, bool& value) const;
     [[nodiscard]] bool getString(const std::string& key, std::string& value) const;
     [[nodiscard]] bool getIntArray(const std::string& key, std::vector<int>& value) const;
+    [[nodiscard]] bool getDoubleArray(const std::string& key, std::vector<double>& value) const;
+    [[nodiscard]] bool getObjectArray(const std::string& key, std::vector<JsonObject>& value) const;
     [[nodiscard]] const std::string& raw() const noexcept { return rawJson_; }
 
 private:
@@ -27,5 +29,6 @@ private:
 Status readTextFile(const std::string& path, std::string& contents);
 Status loadJsonObjectFromFile(const std::string& path, JsonObject& object);
 bool looksLikeJsonObject(const std::string& text);
+std::string statusCodeOverrideModule(Status status, const std::string& module);
 
 } // namespace reconstruct_one_frame

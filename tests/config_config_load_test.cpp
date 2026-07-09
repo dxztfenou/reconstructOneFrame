@@ -29,6 +29,20 @@ int main()
     require(config.frequencyCount == 3, "expected FREQ from config");
     require(config.stepCount == 5, "expected STEP from config");
     require(config.freqSeries.size() == 3, "expected freqSeries size");
+    require(config.freq23 == 7, "expected freq23 from config");
+    require(config.bMin == 1, "expected Bmin from config");
+    require(config.medianKernelSize == 5, "expected winSizeMedian from config");
+    require(config.phaseStepCounts.size() == 3, "expected phaseStepCounts size");
+    require(config.phaseStepCounts[0] == 3, "expected low frequency 3-step contract");
+    require(config.phaseStepCounts[1] == 5, "expected middle frequency 5-step contract");
+    require(config.phaseStepCounts[2] == 5, "expected high frequency 5-step contract");
+    require(config.stripeRequirements.size() == 3, "expected stripe requirement count");
+    require(config.stripeRequirements[0].requiredPhaseSteps == 3, "expected per-frequency phase steps");
+    require(config.stripeRequirements[1].firstProjectorIndex == 4, "expected projector offset after first frequency");
+    require(config.stripeRequirements[2].firstProjectorIndex == 9, "expected projector offset after second frequency");
+    require(!config.phaseUnwrapResidualGateEnabled, "expected residual gate flag from config");
+    require(config.phaseUnwrapAbs23ResidualThreshold == 0.2, "expected abs23 residual threshold");
+    require(config.phaseUnwrapFinalResidualThreshold == 0.2, "expected final residual threshold");
 
     ReconsConfig missing;
     status = loadReconsConfig("config/does_not_exist.json", missing);
