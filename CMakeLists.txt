@@ -88,97 +88,22 @@ target_link_libraries(reconstructSample
 include(CTest)
 
 if(BUILD_TESTING)
-    add_executable(config_config_load_test
-        tests/config_config_load_test.cpp
-    )
-    target_include_directories(config_config_load_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_link_libraries(config_config_load_test PRIVATE reconstructOneFrame)
-    add_test(NAME config_config_load_test COMMAND config_config_load_test)
-    set_tests_properties(config_config_load_test PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    function(rof_add_test name source)
+        add_executable(${name} ${source})
+        target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        target_link_libraries(${name} PRIVATE reconstructOneFrame)
+        add_test(NAME ${name} COMMAND ${name})
+        set_tests_properties(${name} PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endfunction()
 
-    add_executable(image_validator_test
-        tests/image_validator_test.cpp
-    )
-    target_include_directories(image_validator_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_link_libraries(image_validator_test PRIVATE reconstructOneFrame)
-    add_test(NAME image_validator_test COMMAND image_validator_test)
-
-    add_executable(pipeline_smoke_test
-        tests/pipeline_smoke_test.cpp
-    )
-    target_include_directories(pipeline_smoke_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_link_libraries(pipeline_smoke_test PRIVATE reconstructOneFrame)
-    add_test(NAME pipeline_smoke_test COMMAND pipeline_smoke_test)
-    set_tests_properties(pipeline_smoke_test PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
-
-    add_executable(calibration_model_test
-        tests/calibration_model_test.cpp
-    )
-    target_include_directories(calibration_model_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_link_libraries(calibration_model_test PRIVATE reconstructOneFrame)
-    add_test(NAME calibration_model_test COMMAND calibration_model_test)
-    set_tests_properties(calibration_model_test PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
-
-    add_executable(input_manifest_test
-        tests/input_manifest_test.cpp
-    )
-    target_include_directories(input_manifest_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_link_libraries(input_manifest_test PRIVATE reconstructOneFrame)
-    add_test(NAME input_manifest_test COMMAND input_manifest_test)
-    set_tests_properties(input_manifest_test PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
-
-    add_executable(image_validator_contract_test
-        tests/image_validator_contract_test.cpp
-    )
-    target_include_directories(image_validator_contract_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_link_libraries(image_validator_contract_test PRIVATE reconstructOneFrame)
-    add_test(NAME image_validator_contract_test COMMAND image_validator_contract_test)
-
-    add_executable(image_preprocess_dry_run_test
-        tests/image_preprocess_dry_run_test.cpp
-    )
-    target_include_directories(image_preprocess_dry_run_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_link_libraries(image_preprocess_dry_run_test PRIVATE reconstructOneFrame)
-    add_test(NAME image_preprocess_dry_run_test COMMAND image_preprocess_dry_run_test)
-    set_tests_properties(image_preprocess_dry_run_test PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
-
-    add_executable(pipeline_phase2_smoke_test
-        tests/pipeline_phase2_smoke_test.cpp
-    )
-    target_include_directories(pipeline_phase2_smoke_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_link_libraries(pipeline_phase2_smoke_test PRIVATE reconstructOneFrame)
-    add_test(NAME pipeline_phase2_smoke_test COMMAND pipeline_phase2_smoke_test)
-    set_tests_properties(pipeline_phase2_smoke_test PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
-
-    add_executable(wrapped_phase_computer_test
-        tests/wrapped_phase_computer_test.cpp
-    )
-    target_include_directories(wrapped_phase_computer_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_link_libraries(wrapped_phase_computer_test PRIVATE reconstructOneFrame)
-    add_test(NAME wrapped_phase_computer_test COMMAND wrapped_phase_computer_test)
-    set_tests_properties(wrapped_phase_computer_test PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
-
-    add_executable(phase_unwrapper_test
-        tests/phase_unwrapper_test.cpp
-    )
-    target_include_directories(phase_unwrapper_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_link_libraries(phase_unwrapper_test PRIVATE reconstructOneFrame)
-    add_test(NAME phase_unwrapper_test COMMAND phase_unwrapper_test)
-    set_tests_properties(phase_unwrapper_test PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
-
-    add_executable(point_cloud_reconstructor_test
-        tests/point_cloud_reconstructor_test.cpp
-    )
-    target_include_directories(point_cloud_reconstructor_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_link_libraries(point_cloud_reconstructor_test PRIVATE reconstructOneFrame)
-    add_test(NAME point_cloud_reconstructor_test COMMAND point_cloud_reconstructor_test)
-    set_tests_properties(point_cloud_reconstructor_test PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
-
-    add_executable(point_reliability_test
-        tests/point_reliability_test.cpp
-    )
-    target_include_directories(point_reliability_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_link_libraries(point_reliability_test PRIVATE reconstructOneFrame)
-    add_test(NAME point_reliability_test COMMAND point_reliability_test)
-    set_tests_properties(point_reliability_test PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    rof_add_test(config_config_load_test tests/config_config_load_test.cpp)
+    rof_add_test(image_validator_test tests/image_validator_test.cpp)
+    rof_add_test(pipeline_smoke_test tests/pipeline_smoke_test.cpp)
+    rof_add_test(calibration_model_test tests/calibration_model_test.cpp)
+    rof_add_test(input_manifest_test tests/input_manifest_test.cpp)
+    rof_add_test(image_validator_contract_test tests/image_validator_contract_test.cpp)
+    rof_add_test(wrapped_phase_computer_test tests/wrapped_phase_computer_test.cpp)
+    rof_add_test(phase_unwrapper_test tests/phase_unwrapper_test.cpp)
+    rof_add_test(point_cloud_reconstructor_test tests/point_cloud_reconstructor_test.cpp)
+    rof_add_test(point_reliability_test tests/point_reliability_test.cpp)
 endif()

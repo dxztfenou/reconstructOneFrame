@@ -4,7 +4,7 @@
 #include "config/ReconsConfig.h"
 #include "pipeline/SingleFramePipeline.h"
 
-#include <utility>
+#include <memory>
 
 namespace reconstruct_one_frame {
 
@@ -16,36 +16,20 @@ struct ReconstructEngine::Impl {
 };
 
 ReconstructEngine::ReconstructEngine()
-    : impl_(new Impl())
+    : impl_(std::make_unique<Impl>())
 {
 }
 
-ReconstructEngine::~ReconstructEngine()
-{
-    delete impl_;
-    impl_ = nullptr;
-}
+ReconstructEngine::~ReconstructEngine() = default;
 
 ReconstructEngine::ReconstructEngine(ReconstructEngine&& other) noexcept
-    : impl_(std::exchange(other.impl_, nullptr))
-{
-}
+    = default;
 
 ReconstructEngine& ReconstructEngine::operator=(ReconstructEngine&& other) noexcept
-{
-    if (this != &other) {
-        delete impl_;
-        impl_ = std::exchange(other.impl_, nullptr);
-    }
-    return *this;
-}
+    = default;
 
 Status ReconstructEngine::init(const InitOptions& options)
 {
-    if (impl_ == nullptr) {
-        impl_ = new Impl();
-    }
-
     Status status = loadReconsConfig(options.configPath, impl_->config);
     if (!status.ok()) {
         impl_->initialized = false;
@@ -77,7 +61,7 @@ Status ReconstructEngine::init(const InitOptions& options)
 FrameResult ReconstructEngine::run(const StripeFrameGroup& frame)
 {
     FrameResult result;
-    if (impl_ == nullptr || !impl_->initialized) {
+    if (!impl_->initialized) {
         result.status = {StatusCode::InternalError, "ReconstructEngine", "engine is not initialized"};
         return result;
     }
@@ -86,9 +70,7 @@ FrameResult ReconstructEngine::run(const StripeFrameGroup& frame)
 
 void ReconstructEngine::shutdown()
 {
-    if (impl_ != nullptr) {
-        impl_->initialized = false;
-    }
+    impl_->initialized = false;
 }
 
 } // namespace reconstruct_one_frame
