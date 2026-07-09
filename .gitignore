@@ -67,3 +67,8 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# Local Legacy reference copy.
+# This is used only for comparison against D:\code\teethscanalgorithm3x4 and
+# must not be committed into reconstructOneFrame.
+legacy/teethscanalgorithm3x4/

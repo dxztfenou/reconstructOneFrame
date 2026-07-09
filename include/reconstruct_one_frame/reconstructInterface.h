@@ -1,0 +1,159 @@
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+#if defined(RECONSTRUCT_ONE_FRAME_STATIC)
+#define ROF_API
+#elif defined(_WIN32)
+#if defined(RECONSTRUCT_ONE_FRAME_BUILDING_LIBRARY)
+#define ROF_API __declspec(dllexport)
+#else
+#define ROF_API __declspec(dllimport)
+#endif
+#else
+#define ROF_API
+#endif
+
+namespace reconstruct_one_frame {
+
+enum class StatusCode {
+    Ok = 0,
+    InputMissing,
+    InputEmptyImage,
+    InputBlackImage,
+    InputSizeMismatch,
+    InputTypeUnsupported,
+    InputStrideInvalid,
+    InputInvalidValue,
+    ConfigMissing,
+    ConfigParseFailed,
+    ConfigInvalidValue,
+    CalibrationMissing,
+    CalibrationParseFailed,
+    CalibrationInvalid,
+    CudaInitFailed,
+    CudaKernelFailed,
+    DataQualityInsufficient,
+    PhaseFailed,
+    UnwrapFailed,
+    MatchingFailed,
+    ReconstructionInsufficient,
+    OutputWriteFailed,
+    NotComputed,
+    InternalError
+};
+
+struct Status {
+    StatusCode code = StatusCode::Ok;
+    std::string module;
+    std::string message;
+
+    [[nodiscard]] bool ok() const noexcept { return code == StatusCode::Ok; }
+};
+
+enum class CameraSide {
+    Left = 0,
+    Right = 1,
+    Unknown = 2
+};
+
+enum class ImageElementType {
+    Unknown = 0,
+    UInt8 = 1,
+    UInt16 = 2,
+    Float32 = 3
+};
+
+struct ImageView {
+    const void* data = nullptr;
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    int strideBytes = 0;
+    ImageElementType elementType = ImageElementType::Unknown;
+};
+
+struct StripeImage {
+    CameraSide camera = CameraSide::Unknown;
+    int frequencyIndex = -1;
+    int phaseStepIndex = -1;
+    int projectorIndex = -1;
+    ImageView image;
+};
+
+struct StripeFrameGroup {
+    std::uint64_t frameId = 0;
+    std::vector<StripeImage> leftStripes;
+    std::vector<StripeImage> rightStripes;
+    ImageView color;
+    ImageView leftColor;
+    ImageView rightColor;
+};
+
+struct StageStats {
+    std::string stageName;
+    Status status;
+    double elapsedMs = 0.0;
+    std::size_t inputImageCount = 0;
+    std::size_t validImageCount = 0;
+    std::size_t rejectedImageCount = 0;
+    std::size_t checkedPixels = 0;
+    std::size_t blackPixels = 0;
+    bool notComputed = false;
+};
+
+struct FrameResult {
+    Status status;
+    std::vector<StageStats> stats;
+    bool depthComputed = false;
+    bool normalComputed = false;
+    bool qualityComputed = false;
+};
+
+struct InitOptions {
+    std::string configPath;
+    std::string calibrationPath;
+    bool dryRun = false;
+    bool dryRunNoCalib = false;
+};
+
+class ROF_API ReconstructEngine {
+public:
+    ReconstructEngine();
+    ~ReconstructEngine();
+
+    ReconstructEngine(const ReconstructEngine&) = delete;
+    ReconstructEngine& operator=(const ReconstructEngine&) = delete;
+
+    ReconstructEngine(ReconstructEngine&&) noexcept;
+    ReconstructEngine& operator=(ReconstructEngine&&) noexcept;
+
+    Status init(const InitOptions& options);
+    FrameResult run(const StripeFrameGroup& frame);
+    void shutdown();
+
+private:
+    struct Impl;
+    Impl* impl_ = nullptr;
+};
+
+// C ABI reservation for a later DSSI-compatible boundary.
+//
+// First phase intentionally keeps the public implementation C++-first.
+// Future C ABI functions must use opaque handles, POD structs, pointer+count
+// arrays, and explicit ownership rules. Do not expose std::vector, std::string,
+// cv::Mat, or C++ classes across the C ABI boundary.
+extern "C" {
+// Reserved naming shape:
+// ROF_API int rof_create(void** handle);
+// ROF_API int rof_init(void* handle, const RofInitOptions* options);
+// ROF_API int rof_run(void* handle, const RofFrameInput* input, RofFrameOutput* output);
+// ROF_API int rof_destroy(void* handle);
+}
+
+ROF_API const char* statusCodeName(StatusCode code) noexcept;
+
+} // namespace reconstruct_one_frame
