@@ -44,6 +44,12 @@ std::string formatFrameResultSummary(std::uint64_t frameId, const FrameResult& r
         << "wrappedPhaseComputed=" << (result.wrappedPhaseComputed ? "true" : "false") << "\n"
         << "unwrappedPhaseComputed=" << (result.unwrappedPhaseComputed ? "true" : "false") << "\n"
         << "pointCloudVertexCount=" << result.pointCloudVertexCount << "\n";
+    if (!result.matchingSummary.empty()) {
+        out << "matchingSummary=" << result.matchingSummary << "\n";
+    }
+    if (!result.pointCloudSummary.empty()) {
+        out << "pointCloudSummary=" << result.pointCloudSummary << "\n";
+    }
     if (!result.outputPointCloudPath.empty()) {
         out << "outputPointCloudPath=" << result.outputPointCloudPath << "\n";
     }

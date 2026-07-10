@@ -17,6 +17,7 @@ constexpr float kTwoPi = 6.28318530717958647692F;
 
 struct DeviceBuffer {
     void* ptr = nullptr;
+    std::size_t capacity = 0;
 
     DeviceBuffer() = default;
     DeviceBuffer(const DeviceBuffer&) = delete;
@@ -30,12 +31,44 @@ struct DeviceBuffer {
     }
 };
 
+struct PhaseUnwrapWorkspace {
+    DeviceBuffer phi0;
+    DeviceBuffer phi1;
+    DeviceBuffer phi2;
+    DeviceBuffer ph12;
+    DeviceBuffer ph23;
+    DeviceBuffer ph123;
+    DeviceBuffer abs23;
+    DeviceBuffer absolute;
+    DeviceBuffer filtered;
+};
+
 Status cudaStatus(cudaError_t error, const char* operation)
 {
     if (error == cudaSuccess) {
         return {};
     }
     return {StatusCode::CudaKernelFailed, "PhaseUnwrapperCuda", std::string(operation) + ": " + cudaGetErrorString(error)};
+}
+
+Status ensureCapacity(DeviceBuffer& buffer, std::size_t bytes)
+{
+    if (buffer.ptr != nullptr && buffer.capacity >= bytes) {
+        return {};
+    }
+    if (buffer.ptr != nullptr) {
+        const Status freeStatus = cudaStatus(cudaFree(buffer.ptr), "cudaFree undersized phase unwrap buffer");
+        buffer.ptr = nullptr;
+        buffer.capacity = 0;
+        if (!freeStatus.ok()) {
+            return freeStatus;
+        }
+    }
+    Status status = cudaStatus(cudaMalloc(&buffer.ptr, bytes), "cudaMalloc phase unwrap buffer");
+    if (status.ok()) {
+        buffer.capacity = bytes;
+    }
+    return status;
 }
 
 __global__ void computePhaseDiffKernel(const float* first,
@@ -228,18 +261,19 @@ Status computeOneCameraCuda(const WrappedPhaseResult& wrappedPhase,
     output.height = height;
     output.absolutePhase.assign(static_cast<std::size_t>(pixelCount), std::numeric_limits<float>::quiet_NaN());
 
-    DeviceBuffer dPhi0;
-    DeviceBuffer dPhi1;
-    DeviceBuffer dPhi2;
-    DeviceBuffer dPh12;
-    DeviceBuffer dPh23;
-    DeviceBuffer dPh123;
-    DeviceBuffer dAbs23;
-    DeviceBuffer dAbs;
-    DeviceBuffer dAbsFiltered;
+    thread_local PhaseUnwrapWorkspace workspace;
+    DeviceBuffer& dPhi0 = workspace.phi0;
+    DeviceBuffer& dPhi1 = workspace.phi1;
+    DeviceBuffer& dPhi2 = workspace.phi2;
+    DeviceBuffer& dPh12 = workspace.ph12;
+    DeviceBuffer& dPh23 = workspace.ph23;
+    DeviceBuffer& dPh123 = workspace.ph123;
+    DeviceBuffer& dAbs23 = workspace.abs23;
+    DeviceBuffer& dAbs = workspace.absolute;
+    DeviceBuffer& dAbsFiltered = workspace.filtered;
 
     for (DeviceBuffer* buffer : {&dPhi0, &dPhi1, &dPhi2, &dPh12, &dPh23, &dPh123, &dAbs23, &dAbs, &dAbsFiltered}) {
-        status = cudaStatus(cudaMalloc(&buffer->ptr, bytes), "cudaMalloc phase unwrap buffer");
+        status = ensureCapacity(*buffer, bytes);
         if (!status.ok()) {
             return status;
         }

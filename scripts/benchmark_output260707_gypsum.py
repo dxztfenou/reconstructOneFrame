@@ -61,6 +61,20 @@ def parse_sample_output(output: str) -> dict[str, str]:
     run_match = re.search(r"runElapsedMs=([0-9.]+)", output)
     if run_match:
         values["runElapsedMs"] = run_match.group(1)
+    point_cloud_stage_match = re.search(
+        r"stage=point_cloud_reconstruct_cuda,[^\n]*elapsedMs=([0-9.]+)",
+        output,
+    )
+    if point_cloud_stage_match:
+        values["pointCloudElapsedMs"] = point_cloud_stage_match.group(1)
+    point_cloud_summary_match = re.search(
+        r"pointCloudSummary=rawValid=(\d+),smoothedValid=(\d+),filteredValid=(\d+)",
+        output,
+    )
+    if point_cloud_summary_match:
+        values["rawPointCount"] = point_cloud_summary_match.group(1)
+        values["smoothedPointCount"] = point_cloud_summary_match.group(2)
+        values["filteredPointCount"] = point_cloud_summary_match.group(3)
     return values
 
 
@@ -89,7 +103,9 @@ def run_frame(args: argparse.Namespace, frame: int) -> dict[str, object]:
     legacy_count = legacy_valid_count(args.root, frame)
     our_count = int(parsed.get("pointCloudVertexCount", "0"))
     run_elapsed_ms = float(parsed.get("runElapsedMs", "nan"))
+    point_cloud_elapsed_ms = float(parsed.get("pointCloudElapsedMs", "nan"))
     ratio = our_count / legacy_count if legacy_count > 0 else float("nan")
+    completed_algorithm = parsed.get("status", "") in {"Ok", "ReconstructionInsufficient"}
 
     return {
         "frame": frame,
@@ -99,27 +115,49 @@ def run_frame(args: argparse.Namespace, frame: int) -> dict[str, object]:
         "ourPointCount": our_count,
         "pointCountRatio": ratio,
         "runElapsedMs": run_elapsed_ms,
+        "pointCloudElapsedMs": point_cloud_elapsed_ms,
         "processElapsedMs": process_ms,
+        "rawPointCount": int(parsed.get("rawPointCount", "0")),
+        "smoothedPointCount": int(parsed.get("smoothedPointCount", "0")),
+        "filteredPointCount": int(parsed.get("filteredPointCount", "0")),
+        "completedAlgorithm": completed_algorithm,
         "qualitySummary": parsed.get("qualitySummary", ""),
         "log": parsed.get("log", ""),
     }
 
 
 def write_summary(rows: list[dict[str, object]], output: Path) -> None:
-    comparable = [row for row in rows if int(row["legacyPointCount"]) > 0 and int(row["exitCode"]) == 0]
-    losing = [row for row in comparable if float(row["pointCountRatio"]) < 0.95]
+    completed = [row for row in rows if bool(row["completedAlgorithm"])]
+    failed = [row for row in rows if not bool(row["completedAlgorithm"])]
+    comparable = [row for row in completed if int(row["legacyPointCount"]) > 0]
+    below_legacy = [row for row in comparable if float(row["pointCountRatio"]) < 1.0]
+    below_95pct = [row for row in comparable if float(row["pointCountRatio"]) < 0.95]
     legacy_zero_generated_nonzero = [
         row for row in rows
-        if int(row["exitCode"]) == 0 and int(row["legacyPointCount"]) == 0 and int(row["ourPointCount"]) > 0
+        if bool(row["completedAlgorithm"]) and int(row["legacyPointCount"]) == 0 and int(row["ourPointCount"]) > 0
     ]
-    run_times = [float(row["runElapsedMs"]) for row in comparable if np.isfinite(float(row["runElapsedMs"]))]
+    run_times = [float(row["runElapsedMs"]) for row in completed if np.isfinite(float(row["runElapsedMs"]))]
+    point_cloud_times = [
+        float(row["pointCloudElapsedMs"])
+        for row in completed
+        if np.isfinite(float(row["pointCloudElapsedMs"]))
+    ]
+    process_times = [
+        float(row["processElapsedMs"])
+        for row in completed
+        if np.isfinite(float(row["processElapsedMs"]))
+    ]
     legacy_counts = [int(row["legacyPointCount"]) for row in comparable]
     our_counts = [int(row["ourPointCount"]) for row in comparable]
 
     lines = [
         f"frames={len(rows)}",
+        f"completed_algorithm_frames={len(completed)}",
+        f"failed_frames={len(failed)}",
         f"comparable_frames={len(comparable)}",
-        f"point_count_losing_frames={len(losing)}",
+        f"point_count_below_legacy_frames={len(below_legacy)}",
+        f"point_count_below_95pct_frames={len(below_95pct)}",
+        f"point_count_losing_frames={len(below_95pct)}",
         f"legacy_zero_generated_nonzero_frames={len(legacy_zero_generated_nonzero)}",
     ]
     if comparable:
@@ -139,8 +177,24 @@ def write_summary(rows: list[dict[str, object]], output: Path) -> None:
                 f"run_elapsed_ms_mean={float(np.mean(run_times)):.3f}",
             ]
         )
-    if losing:
-        worst = sorted(losing, key=lambda row: float(row["pointCountRatio"]))[:20]
+    if point_cloud_times:
+        lines.extend(
+            [
+                f"point_cloud_elapsed_ms_median={float(np.median(point_cloud_times)):.3f}",
+                f"point_cloud_elapsed_ms_p90={float(np.percentile(point_cloud_times, 90)):.3f}",
+                f"point_cloud_elapsed_ms_mean={float(np.mean(point_cloud_times)):.3f}",
+            ]
+        )
+    if process_times:
+        lines.extend(
+            [
+                f"process_elapsed_ms_median={float(np.median(process_times)):.3f}",
+                f"process_elapsed_ms_p90={float(np.percentile(process_times, 90)):.3f}",
+                f"process_elapsed_ms_mean={float(np.mean(process_times)):.3f}",
+            ]
+        )
+    if below_95pct:
+        worst = sorted(below_95pct, key=lambda row: float(row["pointCountRatio"]))[:20]
         lines.append("worst_point_count_frames=" + ",".join(f"{row['frame']}:{float(row['pointCountRatio']):.3f}" for row in worst))
     if legacy_zero_generated_nonzero:
         examples = legacy_zero_generated_nonzero[:20]
@@ -173,7 +227,12 @@ def main() -> int:
             "ourPointCount",
             "pointCountRatio",
             "runElapsedMs",
+            "pointCloudElapsedMs",
             "processElapsedMs",
+            "rawPointCount",
+            "smoothedPointCount",
+            "filteredPointCount",
+            "completedAlgorithm",
             "qualitySummary",
             "log",
         ]

@@ -5,6 +5,7 @@
 #include "phase/PhaseUnwrapper.h"
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace reconstruct_one_frame {
@@ -35,6 +36,11 @@ struct PointCloudGridPoint {
     int candidateCount = 0;
 };
 
+struct PointCloudOutputOptions {
+    bool materializeVertices = true;
+    bool materializeQualityGrid = true;
+};
+
 struct PointCloudReconstructionResult {
     Status status;
     StageStats stats;
@@ -42,13 +48,20 @@ struct PointCloudReconstructionResult {
     int height = 0;
     std::size_t rawValidPointCount = 0;
     std::size_t filteredGridValidPointCount = 0;
+    std::size_t leftRightRejectedPointCount = 0;
+    std::size_t rightPhaseMonotonicRejectedPointCount = 0;
+    std::string matchingSummary;
     std::vector<PointCloudGridPoint> gridPoints;
     std::vector<PointCloudVertex> vertices;
+    std::size_t smoothedGridValidPointCount = 0;
+    std::string pointCloudStageSummary;
+    bool normalsComputed = false;
 };
 
 PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseResult& unwrappedPhase,
                                                          const CalibrationModel& calibration,
                                                          const ReconsConfig& config,
-                                                         const StripeFrameGroup& frame);
+                                                         const StripeFrameGroup& frame,
+                                                         const PointCloudOutputOptions& outputOptions = {});
 
 } // namespace reconstruct_one_frame

@@ -225,6 +225,13 @@ int main(int argc, char** argv)
         return EXIT_FAILURE;
     }
 
+    if (options.writePly && !sourceImgRoot.empty()) {
+        const int firstFrame = sourceImgFirst >= 0 ? sourceImgFirst : sourceImgFrame;
+        const int lastFrame = sourceImgLast >= 0 ? sourceImgLast : firstFrame;
+        options.outputPerFrameSubdirectory = firstFrame != lastFrame;
+    }
+    const bool includeColor = options.writePly || !options.compareLegacyPlyPath.empty();
+
     ReconstructEngine engine;
     Status status = engine.init(options);
     if (!status.ok()) {
@@ -250,7 +257,11 @@ int main(int argc, char** argv)
         const int step = lastFrame >= firstFrame ? 1 : -1;
         int exitCode = EXIT_SUCCESS;
         for (int frameIndex = firstFrame;; frameIndex += step) {
-            frameStatus = loadSourceImgFrameDirectory(sourceImgRoot, config, frameIndex, manifestFrame);
+            const auto loadStart = std::chrono::steady_clock::now();
+            frameStatus =
+                loadSourceImgFrameDirectory(sourceImgRoot, config, frameIndex, manifestFrame, includeColor);
+            const double loadElapsedMs = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - loadStart).count();
             if (!frameStatus.ok()) {
                 std::cout << "status=" << statusCodeName(frameStatus.code) << "\n"
                           << "module=" << frameStatus.module << "\n"
@@ -263,6 +274,7 @@ int main(int argc, char** argv)
             const double runElapsedMs = std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - runStart).count();
             std::cout << formatFrameResultSummary(manifestFrame.frame.frameId, result);
+            std::cout << "loadElapsedMs=" << loadElapsedMs << "\n";
             std::cout << "runElapsedMs=" << runElapsedMs << "\n";
             if (!result.status.ok()) {
                 exitCode = statusToExitCode(result.status.code);
@@ -285,7 +297,8 @@ int main(int argc, char** argv)
                       << "message=" << frameStatus.message << "\n";
             return statusToExitCode(frameStatus.code);
         }
-        frameStatus = loadSingleStripeBmpDirectory(singleStripeRoot, config, singleStripeGroup, manifestFrame);
+        frameStatus =
+            loadSingleStripeBmpDirectory(singleStripeRoot, config, singleStripeGroup, manifestFrame, includeColor);
         if (!frameStatus.ok()) {
             std::cout << "status=" << statusCodeName(frameStatus.code) << "\n"
                       << "module=" << frameStatus.module << "\n"

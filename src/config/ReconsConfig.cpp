@@ -65,6 +65,9 @@ Status loadReconsConfig(const std::string& path, ReconsConfig& config)
     (void)json.getDouble("matchingMinSecondBestGap", parsed.matchingMinSecondBestGap);
     (void)json.getBool("matchingLeftRightConsistencyEnabled", parsed.matchingLeftRightConsistencyEnabled);
     (void)json.getDouble("matchingLeftRightTolerance", parsed.matchingLeftRightTolerance);
+    (void)json.getBool("matchingRightPhaseMonotonicEnabled", parsed.matchingRightPhaseMonotonicEnabled);
+    (void)json.getInt("matchingRightPhaseMonotonicRadius", parsed.matchingRightPhaseMonotonicRadius);
+    (void)json.getDouble("matchingRightPhaseMinSlope", parsed.matchingRightPhaseMinSlope);
     (void)json.getBool("disparitySubpixelEnabled", parsed.disparitySubpixelEnabled);
     (void)json.getBool("disparityLocalConsistencyEnabled", parsed.disparityLocalConsistencyEnabled);
     (void)json.getDouble("disparityLocalConsistencyThreshold", parsed.disparityLocalConsistencyThreshold);
@@ -72,6 +75,10 @@ Status loadReconsConfig(const std::string& path, ReconsConfig& config)
     (void)json.getInt("disparityLocalConsistencyMinSupport", parsed.disparityLocalConsistencyMinSupport);
     (void)json.getBool("pointCloudSmoothingEnabled", parsed.pointCloudSmoothingEnabled);
     (void)json.getBool("pointCloudFilterEnabled", parsed.pointCloudFilterEnabled);
+    (void)json.getBool("colorTextureEnabled", parsed.colorTextureEnabled);
+    (void)json.getIntArray("colorTextureProjectorIndices", parsed.colorTextureProjectorIndices);
+    (void)json.getDoubleArray("colorCorrectionMatrix", parsed.colorCorrectionMatrix);
+    (void)json.getDouble("colorGamma", parsed.colorGamma);
     (void)json.getBool("qualityInfoEnabled", parsed.qualityInfoEnabled);
     (void)json.getBool("qualityMapEnabled", parsed.qualityInfoEnabled);
     (void)json.getDouble("qualityInfoMinModulation", parsed.qualityInfoMinModulation);
@@ -148,8 +155,31 @@ Status loadReconsConfig(const std::string& path, ReconsConfig& config)
     if (parsed.matchingMaxCandidateCount <= 0) {
         return {StatusCode::ConfigInvalidValue, "ReconsConfig", "matchingMaxCandidateCount must be positive"};
     }
+    if (parsed.matchingLeftRightTolerance < 0.0) {
+        return {StatusCode::ConfigInvalidValue, "ReconsConfig", "matchingLeftRightTolerance must be non-negative"};
+    }
+    if (parsed.matchingRightPhaseMonotonicRadius < 1 || parsed.matchingRightPhaseMonotonicRadius > 5 ||
+        parsed.matchingRightPhaseMinSlope < 0.0) {
+        return {StatusCode::ConfigInvalidValue, "ReconsConfig", "right phase monotonic radius/slope are invalid"};
+    }
     if (parsed.disparityLocalConsistencyRadius < 0 || parsed.disparityLocalConsistencyMinSupport < 0) {
         return {StatusCode::ConfigInvalidValue, "ReconsConfig", "disparity local consistency radius/support must be non-negative"};
+    }
+    if (parsed.colorTextureEnabled) {
+        if (parsed.colorTextureProjectorIndices.size() != 3) {
+            return {StatusCode::ConfigInvalidValue, "ReconsConfig", "colorTextureProjectorIndices must contain B, G, and R projector indices"};
+        }
+        for (int projectorIndex : parsed.colorTextureProjectorIndices) {
+            if (projectorIndex <= 0) {
+                return {StatusCode::ConfigInvalidValue, "ReconsConfig", "colorTextureProjectorIndices must be positive"};
+            }
+        }
+        if (parsed.colorCorrectionMatrix.size() != 12) {
+            return {StatusCode::ConfigInvalidValue, "ReconsConfig", "colorCorrectionMatrix must contain 12 values for a 3x4 BGR matrix"};
+        }
+        if (parsed.colorGamma <= 0.0) {
+            return {StatusCode::ConfigInvalidValue, "ReconsConfig", "colorGamma must be positive"};
+        }
     }
     if (parsed.qualityInfoMinModulation < 0.0 ||
         parsed.qualityInfoPhaseCostThreshold <= 0.0 ||
@@ -215,10 +245,23 @@ std::string summarizeConfig(const ReconsConfig& config)
         << "]+/-" << config.disparityWindowMargin
         << ", matchingUniquenessEnabled=" << (config.matchingUniquenessEnabled ? "true" : "false")
         << ", matchingLeftRightConsistencyEnabled=" << (config.matchingLeftRightConsistencyEnabled ? "true" : "false")
+        << ", matchingRightPhaseMonotonicEnabled=" << (config.matchingRightPhaseMonotonicEnabled ? "true" : "false")
+        << ", matchingRightPhaseMonotonicRadius=" << config.matchingRightPhaseMonotonicRadius
+        << ", matchingRightPhaseMinSlope=" << config.matchingRightPhaseMinSlope
         << ", disparitySubpixelEnabled=" << (config.disparitySubpixelEnabled ? "true" : "false")
         << ", disparityLocalConsistencyEnabled=" << (config.disparityLocalConsistencyEnabled ? "true" : "false")
         << ", pointCloudSmoothingEnabled=" << (config.pointCloudSmoothingEnabled ? "true" : "false")
         << ", pointCloudFilterEnabled=" << (config.pointCloudFilterEnabled ? "true" : "false")
+        << ", colorTextureEnabled=" << (config.colorTextureEnabled ? "true" : "false")
+        << ", colorTextureProjectorIndices=[";
+    for (std::size_t i = 0; i < config.colorTextureProjectorIndices.size(); ++i) {
+        if (i != 0) {
+            out << ",";
+        }
+        out << config.colorTextureProjectorIndices[i];
+    }
+    out << "]"
+        << ", colorGamma=" << config.colorGamma
         << ", qualityInfoEnabled=" << (config.qualityInfoEnabled ? "true" : "false")
         << ", qualityInfoMinModulation=" << config.qualityInfoMinModulation
         << ", qualityInfoPhaseCostThreshold=" << config.qualityInfoPhaseCostThreshold

@@ -11,6 +11,7 @@ struct PipelineOptions {
     bool dryRun = true;
     bool dryRunNoCalib = false;
     bool writePly = false;
+    bool outputPerFrameSubdirectory = false;
     std::string outputDirectory;
     std::string compareLegacyPlyPath;
 };

@@ -39,11 +39,13 @@ Status buildFrameFromManifest(const InputManifest& manifest, ManifestFrame& outp
 Status loadSingleStripeBmpDirectory(const std::string& root,
                                     const ReconsConfig& config,
                                     int groupIndex,
-                                    ManifestFrame& output);
+                                    ManifestFrame& output,
+                                    bool includeColor);
 Status loadSourceImgFrameDirectory(const std::string& root,
                                    const ReconsConfig& config,
                                    int frameIndex,
-                                   ManifestFrame& output);
+                                   ManifestFrame& output,
+                                   bool includeColor);
 std::string summarizeManifest(const InputManifest& manifest);
 
 } // namespace reconstruct_one_frame

@@ -80,6 +80,52 @@ double saturatedValue(ImageElementType type)
     return std::numeric_limits<double>::infinity();
 }
 
+Status mergePixelStats(StageStats& stats,
+                       const ImageValidationOptions& options,
+                       std::size_t checked,
+                       std::size_t black,
+                       std::size_t saturated,
+                       std::size_t nonFinite,
+                       double sum,
+                       double minValue,
+                       double maxValue)
+{
+    const std::size_t priorChecked = stats.checkedPixels;
+    const std::size_t priorNonFinite = stats.nonFinitePixels;
+    stats.checkedPixels += checked;
+    stats.blackPixels += black;
+    stats.saturatedPixels += saturated;
+    stats.nonFinitePixels += nonFinite;
+    if (checked == 0) {
+        return {};
+    }
+
+    stats.blackPixelRatio = static_cast<double>(stats.blackPixels) / static_cast<double>(stats.checkedPixels);
+    stats.saturatedPixelRatio = static_cast<double>(stats.saturatedPixels) / static_cast<double>(stats.checkedPixels);
+    const double nonFiniteRatio = static_cast<double>(stats.nonFinitePixels) / static_cast<double>(stats.checkedPixels);
+    if (std::isfinite(minValue)) {
+        stats.minPixelValue = stats.validImageCount == 0 ? minValue : std::min(stats.minPixelValue, minValue);
+        stats.maxPixelValue = stats.validImageCount == 0 ? maxValue : std::max(stats.maxPixelValue, maxValue);
+    }
+    if (stats.checkedPixels > stats.nonFinitePixels) {
+        const double priorFiniteCount = static_cast<double>(priorChecked - priorNonFinite);
+        const double currentFiniteCount = static_cast<double>(checked - nonFinite);
+        const double priorSum = stats.meanPixelValue * priorFiniteCount;
+        stats.meanPixelValue = (priorSum + sum) /
+            (priorFiniteCount + currentFiniteCount);
+    }
+    if (nonFiniteRatio > options.nonFinitePixelThresholdRatio) {
+        return {StatusCode::InputNonFinitePixel, "ImageValidator", "image contains NaN/Inf pixels above threshold"};
+    }
+    if (stats.blackPixelRatio >= options.blackPixelThresholdRatio) {
+        return {StatusCode::InputBlackImage, "ImageValidator", "image is black above threshold"};
+    }
+    if (stats.saturatedPixelRatio >= options.saturatedPixelThresholdRatio) {
+        return {StatusCode::InputSaturatedImage, "ImageValidator", "image is saturated above threshold"};
+    }
+    return {};
+}
+
 Status collectPixelStats(const ImageView& image, StageStats& stats, const ImageValidationOptions& options)
 {
     const int elementSize = elementSizeBytes(image.elementType);
@@ -92,6 +138,34 @@ Status collectPixelStats(const ImageView& image, StageStats& stats, const ImageV
     double minValue = std::numeric_limits<double>::infinity();
     double maxValue = -std::numeric_limits<double>::infinity();
     const double saturation = saturatedValue(image.elementType);
+
+    if (image.elementType == ImageElementType::UInt8) {
+        std::uint64_t integerSum = 0;
+        unsigned char minByte = std::numeric_limits<unsigned char>::max();
+        unsigned char maxByte = std::numeric_limits<unsigned char>::min();
+        const int rowValues = image.width * image.channels;
+        for (int y = 0; y < image.height; ++y) {
+            const unsigned char* row = base + static_cast<std::size_t>(y) * image.strideBytes;
+            for (int x = 0; x < rowValues; ++x) {
+                const unsigned char value = row[x];
+                black += value == 0;
+                saturated += value == 255;
+                integerSum += value;
+                minByte = std::min(minByte, value);
+                maxByte = std::max(maxByte, value);
+            }
+        }
+        checked = static_cast<std::size_t>(rowValues) * static_cast<std::size_t>(image.height);
+        return mergePixelStats(stats,
+                               options,
+                               checked,
+                               black,
+                               saturated,
+                               0,
+                               static_cast<double>(integerSum),
+                               static_cast<double>(minByte),
+                               static_cast<double>(maxByte));
+    }
 
     for (int y = 0; y < image.height; ++y) {
         const unsigned char* row = base + static_cast<std::size_t>(y) * image.strideBytes;
@@ -116,37 +190,15 @@ Status collectPixelStats(const ImageView& image, StageStats& stats, const ImageV
             ++checked;
         }
     }
-
-    stats.checkedPixels += checked;
-    stats.blackPixels += black;
-    stats.saturatedPixels += saturated;
-    stats.nonFinitePixels += nonFinite;
-    if (checked > 0) {
-        stats.blackPixelRatio = static_cast<double>(stats.blackPixels) / static_cast<double>(stats.checkedPixels);
-        stats.saturatedPixelRatio = static_cast<double>(stats.saturatedPixels) / static_cast<double>(stats.checkedPixels);
-        const double nonFiniteRatio = static_cast<double>(stats.nonFinitePixels) / static_cast<double>(stats.checkedPixels);
-        if (std::isfinite(minValue)) {
-            stats.minPixelValue = stats.validImageCount == 0 ? minValue : std::min(stats.minPixelValue, minValue);
-            stats.maxPixelValue = stats.validImageCount == 0 ? maxValue : std::max(stats.maxPixelValue, maxValue);
-        }
-        if (stats.checkedPixels > stats.nonFinitePixels) {
-            const double priorCount = static_cast<double>(stats.checkedPixels - checked);
-            const double currentFiniteCount = static_cast<double>(checked - nonFinite);
-            const double priorSum = stats.meanPixelValue * priorCount;
-            stats.meanPixelValue = (priorSum + sum) / (priorCount + currentFiniteCount);
-        }
-        if (nonFiniteRatio > options.nonFinitePixelThresholdRatio) {
-            return {StatusCode::InputNonFinitePixel, "ImageValidator", "image contains NaN/Inf pixels above threshold"};
-        }
-        if (stats.blackPixelRatio >= options.blackPixelThresholdRatio) {
-            return {StatusCode::InputBlackImage, "ImageValidator", "image is black above threshold"};
-        }
-        if (stats.saturatedPixelRatio >= options.saturatedPixelThresholdRatio) {
-            return {StatusCode::InputSaturatedImage, "ImageValidator", "image is saturated above threshold"};
-        }
-    }
-
-    return {};
+    return mergePixelStats(stats,
+                           options,
+                           checked,
+                           black,
+                           saturated,
+                           nonFinite,
+                           sum,
+                           minValue,
+                           maxValue);
 }
 
 Status validateStripeVector(const std::vector<StripeImage>& images,

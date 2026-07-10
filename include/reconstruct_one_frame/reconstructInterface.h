@@ -140,6 +140,8 @@ struct FrameResult {
     std::string outputPointCloudPath;
     std::string legacyComparisonSummary;
     std::string qualitySummary;
+    std::string matchingSummary;
+    std::string pointCloudSummary;
 };
 
 struct InitOptions {
@@ -150,6 +152,7 @@ struct InitOptions {
     bool dryRun = false;
     bool dryRunNoCalib = false;
     bool writePly = false;
+    bool outputPerFrameSubdirectory = false;
 };
 
 class ROF_API ReconstructEngine {

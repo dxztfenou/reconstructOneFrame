@@ -1,6 +1,7 @@
 #include "image/InputManifest.h"
 
 #include <algorithm>
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -107,20 +108,22 @@ Status loadBmp8(const std::filesystem::path& path,
     if (!input) {
         return {StatusCode::InputManifestMissing, "InputManifest", "BMP file not found: " + path.string()};
     }
-    std::vector<unsigned char> file((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
-    if (file.size() < 54 || file[0] != 'B' || file[1] != 'M') {
+    std::array<unsigned char, 54> header = {};
+    input.read(reinterpret_cast<char*>(header.data()), static_cast<std::streamsize>(header.size()));
+    if (input.gcount() != static_cast<std::streamsize>(header.size()) ||
+        header[0] != 'B' || header[1] != 'M') {
         return {StatusCode::InputManifestParseFailed, "InputManifest", "invalid BMP header: " + path.string()};
     }
-    const std::uint32_t dataOffset = readLe32(file.data() + 10);
-    const std::uint32_t dibSize = readLe32(file.data() + 14);
-    if (dibSize < 40 || file.size() < dataOffset) {
+    const std::uint32_t dataOffset = readLe32(header.data() + 10);
+    const std::uint32_t dibSize = readLe32(header.data() + 14);
+    if (dibSize < 40) {
         return {StatusCode::InputManifestParseFailed, "InputManifest", "unsupported BMP DIB header: " + path.string()};
     }
-    const auto signedWidth = static_cast<std::int32_t>(readLe32(file.data() + 18));
-    const auto signedHeight = static_cast<std::int32_t>(readLe32(file.data() + 22));
-    const std::uint16_t planes = readLe16(file.data() + 26);
-    const std::uint16_t bitsPerPixel = readLe16(file.data() + 28);
-    const std::uint32_t compression = readLe32(file.data() + 30);
+    const auto signedWidth = static_cast<std::int32_t>(readLe32(header.data() + 18));
+    const auto signedHeight = static_cast<std::int32_t>(readLe32(header.data() + 22));
+    const std::uint16_t planes = readLe16(header.data() + 26);
+    const std::uint16_t bitsPerPixel = readLe16(header.data() + 28);
+    const std::uint32_t compression = readLe32(header.data() + 30);
     if (signedWidth <= 0 || signedHeight == 0 || planes != 1 || bitsPerPixel != 8 || compression != 0) {
         return {StatusCode::InputManifestParseFailed, "InputManifest", "only uncompressed 8-bit BMP is supported: " + path.string()};
     }
@@ -130,15 +133,36 @@ Status loadBmp8(const std::filesystem::path& path,
     const bool topDown = signedHeight < 0;
     const int stride = ((width * bitsPerPixel + 31) / 32) * 4;
     const std::size_t needed = static_cast<std::size_t>(dataOffset) + static_cast<std::size_t>(stride) * static_cast<std::size_t>(height);
-    if (file.size() < needed) {
+    input.seekg(0, std::ios::end);
+    const std::streamoff fileSize = input.tellg();
+    if (fileSize < 0 || static_cast<std::uint64_t>(fileSize) < needed) {
         return {StatusCode::InputManifestParseFailed, "InputManifest", "BMP pixel data is truncated: " + path.string()};
     }
 
-    pixels.assign(static_cast<std::size_t>(width) * static_cast<std::size_t>(height), 0);
+    const std::size_t packedBytes = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+    const std::size_t pixelBlockBytes = static_cast<std::size_t>(stride) * static_cast<std::size_t>(height);
+    pixels.resize(packedBytes);
+    input.seekg(static_cast<std::streamoff>(dataOffset), std::ios::beg);
+    if (topDown && stride == width) {
+        input.read(reinterpret_cast<char*>(pixels.data()), static_cast<std::streamsize>(packedBytes));
+        if (input.gcount() != static_cast<std::streamsize>(packedBytes)) {
+            return {StatusCode::InputManifestParseFailed, "InputManifest", "BMP pixel data read failed: " + path.string()};
+        }
+        return {};
+    }
+
+    thread_local std::vector<unsigned char> pixelBlock;
+    pixelBlock.resize(pixelBlockBytes);
+    input.read(reinterpret_cast<char*>(pixelBlock.data()), static_cast<std::streamsize>(pixelBlockBytes));
+    if (input.gcount() != static_cast<std::streamsize>(pixelBlockBytes)) {
+        return {StatusCode::InputManifestParseFailed, "InputManifest", "BMP pixel data read failed: " + path.string()};
+    }
     for (int y = 0; y < height; ++y) {
         const int sourceY = topDown ? y : (height - 1 - y);
-        const unsigned char* source = file.data() + dataOffset + static_cast<std::size_t>(sourceY) * static_cast<std::size_t>(stride);
-        std::copy(source, source + width, pixels.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(width));
+        const unsigned char* source = pixelBlock.data() + static_cast<std::size_t>(sourceY) * static_cast<std::size_t>(stride);
+        std::memcpy(pixels.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(width),
+                    source,
+                    static_cast<std::size_t>(width));
     }
     return {};
 }
@@ -206,6 +230,73 @@ Status appendBmpStripe(const std::filesystem::path& path,
     view.strideBytes = width;
     view.elementType = ImageElementType::UInt8;
     target.push_back({side, frequencyIndex, phaseStepIndex, projectorIndex, view});
+    return {};
+}
+
+Status appendBmpColor(const std::array<std::filesystem::path, 3>& paths,
+                      ManifestFrame& output,
+                      int& expectedWidth,
+                      int& expectedHeight)
+{
+    std::array<std::vector<unsigned char>, 3> channels;
+    int width = 0;
+    int height = 0;
+    for (std::size_t channel = 0; channel < channels.size(); ++channel) {
+        int channelWidth = 0;
+        int channelHeight = 0;
+        Status status = loadBmp8(paths[channel], channels[channel], channelWidth, channelHeight);
+        if (!status.ok()) {
+            return status;
+        }
+        if (channel == 0) {
+            width = channelWidth;
+            height = channelHeight;
+        } else if (channelWidth != width || channelHeight != height) {
+            return {StatusCode::InputSizeMismatch, "InputManifest", "color BMP size mismatch: " + paths[channel].string()};
+        }
+    }
+    if (expectedWidth == 0 && expectedHeight == 0) {
+        expectedWidth = width;
+        expectedHeight = height;
+    } else if (width != expectedWidth || height != expectedHeight) {
+        return {StatusCode::InputSizeMismatch, "InputManifest", "color BMP size does not match phase input"};
+    }
+
+    const std::size_t pixelCount = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+    output.buffers.emplace_back(pixelCount * 3);
+    std::vector<unsigned char>& packedBgr = output.buffers.back();
+    for (std::size_t pixel = 0; pixel < pixelCount; ++pixel) {
+        packedBgr[pixel * 3 + 0] = channels[0][pixel];
+        packedBgr[pixel * 3 + 1] = channels[1][pixel];
+        packedBgr[pixel * 3 + 2] = channels[2][pixel];
+    }
+
+    ImageView view;
+    view.data = packedBgr.data();
+    view.width = width;
+    view.height = height;
+    view.channels = 3;
+    view.strideBytes = width * 3;
+    view.elementType = ImageElementType::UInt8;
+    output.frame.leftColor = view;
+    output.frame.color = view;
+    return {};
+}
+
+Status validateColorProjectorIndices(const ReconsConfig& config)
+{
+    if (config.colorTextureProjectorIndices.size() != 3) {
+        return {StatusCode::ConfigInvalidValue,
+                "InputManifest",
+                "colorTextureProjectorIndices must contain B, G, and R projector indices"};
+    }
+    for (int projectorIndex : config.colorTextureProjectorIndices) {
+        if (projectorIndex <= 0) {
+            return {StatusCode::ConfigInvalidValue,
+                    "InputManifest",
+                    "colorTextureProjectorIndices must be positive"};
+        }
+    }
     return {};
 }
 
@@ -277,13 +368,23 @@ Status buildFrameFromManifest(const InputManifest& manifest, ManifestFrame& outp
 Status loadSingleStripeBmpDirectory(const std::string& root,
                                     const ReconsConfig& config,
                                     int groupIndex,
-                                    ManifestFrame& output)
+                                    ManifestFrame& output,
+                                    bool includeColor)
 {
     output = ManifestFrame {};
     output.frame.frameId = static_cast<std::uint64_t>(std::max(groupIndex, 0));
+    if (config.colorTextureEnabled && includeColor) {
+        Status status = validateColorProjectorIndices(config);
+        if (!status.ok()) {
+            return status;
+        }
+    }
     std::size_t expectedImageCount = 0;
     for (const StripeRequirement& requirement : config.stripeRequirements) {
         expectedImageCount += static_cast<std::size_t>(requirement.requiredPhaseSteps) * 2;
+    }
+    if (config.colorTextureEnabled && includeColor) {
+        ++expectedImageCount;
     }
     output.buffers.reserve(expectedImageCount);
 
@@ -321,19 +422,37 @@ Status loadSingleStripeBmpDirectory(const std::string& root,
             }
         }
     }
+    if (config.colorTextureEnabled && includeColor) {
+        std::array<std::filesystem::path, 3> colorPaths;
+        for (std::size_t channel = 0; channel < colorPaths.size(); ++channel) {
+            colorPaths[channel] =
+                groupRoot / "L" / (std::to_string(config.colorTextureProjectorIndices[channel]) + ".bmp");
+        }
+        return appendBmpColor(colorPaths, output, expectedWidth, expectedHeight);
+    }
     return {};
 }
 
 Status loadSourceImgFrameDirectory(const std::string& root,
                                    const ReconsConfig& config,
                                    int frameIndex,
-                                   ManifestFrame& output)
+                                   ManifestFrame& output,
+                                   bool includeColor)
 {
     output = ManifestFrame {};
     output.frame.frameId = static_cast<std::uint64_t>(std::max(frameIndex, 0));
+    if (config.colorTextureEnabled && includeColor) {
+        Status status = validateColorProjectorIndices(config);
+        if (!status.ok()) {
+            return status;
+        }
+    }
     std::size_t expectedImageCount = 0;
     for (const StripeRequirement& requirement : config.stripeRequirements) {
         expectedImageCount += static_cast<std::size_t>(requirement.requiredPhaseSteps) * 2;
+    }
+    if (config.colorTextureEnabled && includeColor) {
+        ++expectedImageCount;
     }
     output.buffers.reserve(expectedImageCount);
 
@@ -390,6 +509,15 @@ Status loadSourceImgFrameDirectory(const std::string& root,
                 return status;
             }
         }
+    }
+    if (config.colorTextureEnabled && includeColor) {
+        std::array<std::filesystem::path, 3> colorPaths;
+        for (std::size_t channel = 0; channel < colorPaths.size(); ++channel) {
+            const int sourceImgIndex = config.colorTextureProjectorIndices[channel] - 1;
+            colorPaths[channel] =
+                sourceImgRoot / ("L" + std::to_string(sourceImgIndex) + ".bmp");
+        }
+        return appendBmpColor(colorPaths, output, expectedWidth, expectedHeight);
     }
     return {};
 }

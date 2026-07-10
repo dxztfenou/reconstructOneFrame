@@ -96,19 +96,66 @@ int main()
         writeTinyBmp(sourceImg / ("L" + std::to_string(i) + ".bmp"), static_cast<unsigned char>(20 + i));
         writeTinyBmp(sourceImg / ("R" + std::to_string(i) + ".bmp"), static_cast<unsigned char>(40 + i));
     }
+    writeTinyBmp(sourceImg / "L15.bmp", 70);
+    writeTinyBmp(sourceImg / "L16.bmp", 80);
+    writeTinyBmp(sourceImg / "L17.bmp", 90);
 
     ReconsConfig config;
     config.stripeRequirements.clear();
     config.stripeRequirements.push_back({0, 15, 2, 1, -1});
     config.stripeRequirements.push_back({1, 21, 1, 3, -1});
-    status = loadSourceImgFrameDirectory(sourceRoot.string(), config, 7, frame);
-    std::filesystem::remove_all(sourceRoot);
+    config.colorTextureEnabled = true;
+    config.colorTextureProjectorIndices = {16, 17, 18};
+    status = loadSourceImgFrameDirectory(sourceRoot.string(), config, 7, frame, true);
     require(status.ok(), "expected SourceImg frame to load");
     require(frame.frame.frameId == 7, "expected SourceImg frame id");
     require(frame.frame.leftStripes.size() == 3, "expected SourceImg left stripe count");
     require(frame.frame.rightStripes.size() == 3, "expected SourceImg right stripe count");
     require(frame.frame.leftStripes[0].projectorIndex == 1, "expected zero-based SourceImg to map to projectorIndex 1");
     require(frame.frame.leftStripes[2].frequencyIndex == 1, "expected second requirement frequency");
+    require(frame.frame.leftColor.data != nullptr, "expected packed left color");
+    require(frame.frame.leftColor.channels == 3, "expected packed BGR color");
+    const auto* color = static_cast<const unsigned char*>(frame.frame.leftColor.data);
+    require(color[0] == 70 && color[1] == 80 && color[2] == 90, "expected BGR auxiliary frame order");
+
+    std::filesystem::remove(sourceImg / "L15.bmp");
+    std::filesystem::remove(sourceImg / "L16.bmp");
+    std::filesystem::remove(sourceImg / "L17.bmp");
+    status = loadSourceImgFrameDirectory(sourceRoot.string(), config, 7, frame, false);
+    require(status.ok(), "expected SourceImg phase input to load without color files when color is excluded");
+    require(frame.frame.leftStripes.size() == 3, "expected phase input when color is excluded");
+    require(frame.frame.rightStripes.size() == 3, "expected right phase input when color is excluded");
+    require(frame.frame.leftColor.data == nullptr, "expected leftColor to remain empty when color is excluded");
+    require(frame.frame.color.data == nullptr, "expected color to remain empty when color is excluded");
+
+    ReconsConfig invalidColorConfig = config;
+    invalidColorConfig.colorTextureProjectorIndices = {16, 17};
+    status = loadSourceImgFrameDirectory(sourceRoot.string(), invalidColorConfig, 7, frame, true);
+    std::filesystem::remove_all(sourceRoot);
+    require(status.code == StatusCode::ConfigInvalidValue,
+            "expected direct loader call to reject invalid color projector indices");
+
+    const auto singleStripeRoot =
+        std::filesystem::temp_directory_path() / "rof_single_stripe_loader_test";
+    const auto singleStripeLeft = singleStripeRoot / "9" / "L";
+    const auto singleStripeRight = singleStripeRoot / "9" / "R";
+    std::filesystem::remove_all(singleStripeRoot);
+    std::filesystem::create_directories(singleStripeLeft);
+    std::filesystem::create_directories(singleStripeRight);
+    for (int projectorIndex = 1; projectorIndex <= 3; ++projectorIndex) {
+        writeTinyBmp(singleStripeLeft / (std::to_string(projectorIndex) + ".bmp"),
+                     static_cast<unsigned char>(60 + projectorIndex));
+        writeTinyBmp(singleStripeRight / (std::to_string(projectorIndex) + ".bmp"),
+                     static_cast<unsigned char>(90 + projectorIndex));
+    }
+    status = loadSingleStripeBmpDirectory(singleStripeRoot.string(), config, 9, frame, false);
+    std::filesystem::remove_all(singleStripeRoot);
+    require(status.ok(), "expected singleStripe phase input to load without color files when color is excluded");
+    require(frame.frame.frameId == 9, "expected singleStripe frame id");
+    require(frame.frame.leftStripes.size() == 3, "expected singleStripe left phase input");
+    require(frame.frame.rightStripes.size() == 3, "expected singleStripe right phase input");
+    require(frame.frame.leftColor.data == nullptr, "expected singleStripe leftColor to remain empty");
+    require(frame.frame.color.data == nullptr, "expected singleStripe color to remain empty");
 
     return EXIT_SUCCESS;
 }

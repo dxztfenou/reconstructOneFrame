@@ -127,6 +127,10 @@ WrappedPhaseResult computeWrappedPhaseCpuReference(const StripeFrameGroup& frame
             result.stats.status = status;
             return result;
         }
+        if (!options.materializeModulation) {
+            left.modulation.clear();
+            right.modulation.clear();
+        }
         result.stats.validImageCount += static_cast<std::size_t>(requirement.requiredPhaseSteps) * 2;
         result.stats.checkedPixels += left.phase.size() + right.phase.size();
         result.stats.meanPixelValue += left.meanModulation + right.meanModulation;

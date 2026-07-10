@@ -89,7 +89,9 @@ FrameResult SingleFramePipeline::run(const StripeFrameGroup& frame) const
     }
 
     stageStart = std::chrono::steady_clock::now();
-    WrappedPhaseResult wrappedPhase = computeWrappedPhaseCuda(frame, config_);
+    WrappedPhaseOptions wrappedPhaseOptions;
+    wrappedPhaseOptions.materializeModulation = false;
+    WrappedPhaseResult wrappedPhase = computeWrappedPhaseCuda(frame, config_, wrappedPhaseOptions);
     wrappedPhase.stats.elapsedMs = elapsedMsSince(stageStart);
     result.stats.push_back(wrappedPhase.stats);
     if (!wrappedPhase.status.ok()) {
@@ -125,35 +127,55 @@ FrameResult SingleFramePipeline::run(const StripeFrameGroup& frame) const
     }
 
     stageStart = std::chrono::steady_clock::now();
-    PointCloudReconstructionResult pointCloud = reconstructPointCloudCuda(unwrappedPhase, calibration_, config_, frame);
+    PointCloudOutputOptions pointCloudOutputOptions;
+    pointCloudOutputOptions.materializeVertices =
+        options_.writePly || !options_.compareLegacyPlyPath.empty();
+    pointCloudOutputOptions.materializeQualityGrid = config_.qualityInfoEnabled;
+    PointCloudReconstructionResult pointCloud =
+        reconstructPointCloudCuda(unwrappedPhase, calibration_, config_, frame, pointCloudOutputOptions);
     pointCloud.stats.elapsedMs = elapsedMsSince(stageStart);
     result.stats.push_back(pointCloud.stats);
+    result.matchingSummary = pointCloud.matchingSummary;
+    result.pointCloudSummary = pointCloud.pointCloudStageSummary;
     if (!pointCloud.status.ok()) {
         result.status = pointCloud.status;
         logWarn("pipeline failed at point cloud reconstruction: " + std::string(statusCodeName(pointCloud.status.code)) + " " + pointCloud.status.message);
         return result;
     }
     result.depthComputed = true;
-    result.normalComputed = true;
-    result.pointCloudVertexCount = pointCloud.vertices.size();
+    result.normalComputed = pointCloud.normalsComputed;
+    result.pointCloudVertexCount = pointCloud.filteredGridValidPointCount;
 
-    stageStart = std::chrono::steady_clock::now();
-    PointReliabilityResult quality = evaluatePointReliability(pointCloud, config_);
-    quality.stats.elapsedMs = elapsedMsSince(stageStart);
-    result.stats.push_back(quality.stats);
-    if (!quality.status.ok()) {
-        result.status = quality.status;
-        logWarn("pipeline failed at quality evaluation: " + std::string(statusCodeName(quality.status.code)) + " " + quality.status.message);
-        return result;
+    if (config_.qualityInfoEnabled) {
+        stageStart = std::chrono::steady_clock::now();
+        PointReliabilityResult quality = evaluatePointReliability(pointCloud, config_);
+        quality.stats.elapsedMs = elapsedMsSince(stageStart);
+        result.stats.push_back(quality.stats);
+        if (!quality.status.ok()) {
+            result.status = quality.status;
+            logWarn("pipeline failed at quality evaluation: " + std::string(statusCodeName(quality.status.code)) + " " + quality.status.message);
+            return result;
+        }
+        result.qualityComputed = true;
+        result.qualitySummary = quality.summary;
+    } else {
+        StageStats qualityStats;
+        qualityStats.stageName = "quality_evaluate";
+        qualityStats.status = {StatusCode::NotComputed, "SingleFramePipeline", "quality evaluation disabled by config"};
+        qualityStats.skipped = true;
+        qualityStats.notComputed = true;
+        result.stats.push_back(qualityStats);
     }
-    result.qualityComputed = true;
-    result.qualitySummary = quality.summary;
 
     if (options_.writePly && !options_.outputDirectory.empty()) {
         StageStats outputStats;
         outputStats.stageName = "ply_output";
         stageStart = std::chrono::steady_clock::now();
-        const std::filesystem::path outputPath = std::filesystem::path(options_.outputDirectory) / "depth_points.ply";
+        std::filesystem::path outputDirectory(options_.outputDirectory);
+        if (options_.outputPerFrameSubdirectory) {
+            outputDirectory /= std::to_string(frame.frameId);
+        }
+        const std::filesystem::path outputPath = outputDirectory / "depth_points.ply";
         status = writeAsciiPly(outputPath.string(), pointCloud.vertices);
         outputStats.elapsedMs = elapsedMsSince(stageStart);
         outputStats.status = status;
@@ -192,6 +214,8 @@ FrameResult SingleFramePipeline::run(const StripeFrameGroup& frame) const
 
     result.status = {};
     logInfo("pipeline phase-6 summary: StatusCode::Ok, point cloud vertices=" + std::to_string(result.pointCloudVertexCount) +
+            ", " + result.matchingSummary +
+            ", " + result.pointCloudSummary +
             ", qualityComputed=" + std::string(result.qualityComputed ? "true" : "false"));
     return result;
 }

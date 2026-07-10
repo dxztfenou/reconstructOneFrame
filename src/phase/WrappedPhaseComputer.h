@@ -30,6 +30,7 @@ struct WrappedPhaseResult {
 struct WrappedPhaseOptions {
     double minMeanModulation = 1.0;
     bool preferCuda = true;
+    bool materializeModulation = true;
 };
 
 WrappedPhaseResult computeWrappedPhaseCpuReference(const StripeFrameGroup& frame,

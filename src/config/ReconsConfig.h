@@ -42,6 +42,9 @@ struct ReconsConfig {
     double matchingMinSecondBestGap = 0.05;
     bool matchingLeftRightConsistencyEnabled = false;
     double matchingLeftRightTolerance = 1.5;
+    bool matchingRightPhaseMonotonicEnabled = false;
+    int matchingRightPhaseMonotonicRadius = 1;
+    double matchingRightPhaseMinSlope = 0.0001;
     bool disparitySubpixelEnabled = false;
     bool disparityLocalConsistencyEnabled = false;
     double disparityLocalConsistencyThreshold = 6.0;
@@ -49,6 +52,14 @@ struct ReconsConfig {
     int disparityLocalConsistencyMinSupport = 6;
     bool pointCloudSmoothingEnabled = false;
     bool pointCloudFilterEnabled = false;
+    bool colorTextureEnabled = false;
+    std::vector<int> colorTextureProjectorIndices = {16, 17, 18};
+    std::vector<double> colorCorrectionMatrix = {
+        1.0, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0
+    };
+    double colorGamma = 1.0;
     bool qualityInfoEnabled = true;
     double qualityInfoMinModulation = 8.0;
     bool qualityInfoReasonChannelEnabled = true;
