@@ -8,7 +8,10 @@
 #include "quality/PointReliability.h"
 #include "reconstruction/PointCloudReconstructor.h"
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <sstream>
 
@@ -20,6 +23,69 @@ double elapsedMsSince(std::chrono::steady_clock::time_point start)
 {
     const auto elapsed = std::chrono::steady_clock::now() - start;
     return std::chrono::duration<double, std::milli>(elapsed).count();
+}
+
+
+std::uint16_t toU16Unit(double value)
+{
+    const double clamped = std::clamp(value, 0.0, 1.0);
+    return static_cast<std::uint16_t>(std::lround(clamped * 65535.0));
+}
+
+std::uint16_t toU16Reason(unsigned int value)
+{
+    return static_cast<std::uint16_t>(std::min<unsigned int>(value, 65535U));
+}
+
+void materializeFrameOutputMaps(const PointCloudReconstructionResult& pointCloud,
+                                const PointReliabilityResult* quality,
+                                FrameResult& result)
+{
+    if (pointCloud.width <= 0 || pointCloud.height <= 0) {
+        return;
+    }
+
+    result.outputWidth = pointCloud.width;
+    result.outputHeight = pointCloud.height;
+    const std::size_t pixelCount =
+        static_cast<std::size_t>(pointCloud.width) * static_cast<std::size_t>(pointCloud.height);
+    result.depthXyz.assign(pixelCount * 3U, 0.0F);
+    result.normalXyz.assign(pixelCount * 3U, 0.0F);
+    result.colorBgr.assign(pixelCount * 3U, 0U);
+    if (pointCloud.rectifiedColorBgr.size() == result.colorBgr.size()) {
+        result.colorBgr = pointCloud.rectifiedColorBgr;
+    }
+
+    for (const PointCloudVertex& vertex : pointCloud.vertices) {
+        if (vertex.u < 0 || vertex.v < 0 ||
+            vertex.u >= pointCloud.width || vertex.v >= pointCloud.height) {
+            continue;
+        }
+        const std::size_t base =
+            (static_cast<std::size_t>(vertex.v) * static_cast<std::size_t>(pointCloud.width) +
+             static_cast<std::size_t>(vertex.u)) * 3U;
+        result.depthXyz[base + 0U] = vertex.x;
+        result.depthXyz[base + 1U] = vertex.y;
+        result.depthXyz[base + 2U] = vertex.z;
+        result.normalXyz[base + 0U] = vertex.nx;
+        result.normalXyz[base + 1U] = vertex.ny;
+        result.normalXyz[base + 2U] = vertex.nz;
+        result.colorBgr[base + 0U] = vertex.b;
+        result.colorBgr[base + 1U] = vertex.g;
+        result.colorBgr[base + 2U] = vertex.r;
+    }
+
+    if (quality != nullptr && quality->map.pixels.size() == pixelCount) {
+        result.qualityInfoU16.assign(pixelCount * 3U, 0U);
+        for (std::size_t idx = 0; idx < pixelCount; ++idx) {
+            const PointReliabilityPixel& pixel = quality->map.pixels[idx];
+            const std::size_t base = idx * 3U;
+            result.qualityInfoU16[base + 0U] = static_cast<std::uint16_t>(
+                std::clamp(pixel.semanticClass, 0.0, 65535.0));
+            result.qualityInfoU16[base + 1U] = toU16Unit(pixel.score);
+            result.qualityInfoU16[base + 2U] = toU16Reason(pixel.reason);
+        }
+    }
 }
 
 } // namespace
@@ -129,8 +195,9 @@ FrameResult SingleFramePipeline::run(const StripeFrameGroup& frame) const
     stageStart = std::chrono::steady_clock::now();
     PointCloudOutputOptions pointCloudOutputOptions;
     pointCloudOutputOptions.materializeVertices =
-        options_.writePly || !options_.compareLegacyPlyPath.empty();
-    pointCloudOutputOptions.materializeQualityGrid = config_.qualityInfoEnabled;
+        options_.materializeFrameOutputs || options_.writePly || !options_.compareLegacyPlyPath.empty();
+    pointCloudOutputOptions.materializeQualityGrid =
+        options_.materializeFrameOutputs || config_.qualityInfoEnabled;
     PointCloudReconstructionResult pointCloud =
         reconstructPointCloudCuda(unwrappedPhase, calibration_, config_, frame, pointCloudOutputOptions);
     pointCloud.stats.elapsedMs = elapsedMsSince(stageStart);
@@ -146,9 +213,11 @@ FrameResult SingleFramePipeline::run(const StripeFrameGroup& frame) const
     result.normalComputed = pointCloud.normalsComputed;
     result.pointCloudVertexCount = pointCloud.filteredGridValidPointCount;
 
+    PointReliabilityResult quality;
+    const PointReliabilityResult* qualityOutput = nullptr;
     if (config_.qualityInfoEnabled) {
         stageStart = std::chrono::steady_clock::now();
-        PointReliabilityResult quality = evaluatePointReliability(pointCloud, config_);
+        quality = evaluatePointReliability(pointCloud, config_);
         quality.stats.elapsedMs = elapsedMsSince(stageStart);
         result.stats.push_back(quality.stats);
         if (!quality.status.ok()) {
@@ -158,6 +227,7 @@ FrameResult SingleFramePipeline::run(const StripeFrameGroup& frame) const
         }
         result.qualityComputed = true;
         result.qualitySummary = quality.summary;
+        qualityOutput = &quality;
     } else {
         StageStats qualityStats;
         qualityStats.stageName = "quality_evaluate";
@@ -165,6 +235,10 @@ FrameResult SingleFramePipeline::run(const StripeFrameGroup& frame) const
         qualityStats.skipped = true;
         qualityStats.notComputed = true;
         result.stats.push_back(qualityStats);
+    }
+
+    if (options_.materializeFrameOutputs) {
+        materializeFrameOutputMaps(pointCloud, qualityOutput, result);
     }
 
     if (options_.writePly && !options_.outputDirectory.empty()) {

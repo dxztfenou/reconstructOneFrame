@@ -14,10 +14,18 @@ set(CMAKE_CUDA_EXTENSIONS OFF)
 set(CMAKE_CUDA_ARCHITECTURES 75)
 set(CMAKE_CUDA_RUNTIME_LIBRARY Shared)
 
-add_library(reconstructOneFrame
+set(THIRDPARTY "D:/code/ThirdPartyLibraries" CACHE PATH "Third-party dependency root")
+if(WIN32 AND NOT OpenCV_DIR AND EXISTS "${THIRDPARTY}/opencv453/x64/vc15/lib/OpenCVConfig.cmake")
+    set(OpenCV_DIR "${THIRDPARTY}/opencv453/x64/vc15/lib")
+endif()
+find_package(OpenCV 4.5.3 REQUIRED)
+find_package(CUDAToolkit REQUIRED)
+
+add_library(reconstructOneFrame SHARED
     src/calibration_model/CalibrationJsonReader.cpp
     src/calibration_model/CalibrationModel.cpp
     src/config/ReconsConfig.cpp
+    src/dssi/DssiThreeScanCompat.cpp
     src/diagnostics/DiagnosticSummary.cpp
     src/diagnostics/Status.cpp
     src/image/ImagePreprocessor.cpp
@@ -40,13 +48,17 @@ target_include_directories(reconstructOneFrame
         ${CMAKE_CURRENT_SOURCE_DIR}/include
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${OpenCV_INCLUDE_DIRS}
 )
 
 target_compile_definitions(reconstructOneFrame
-    PUBLIC
-        RECONSTRUCT_ONE_FRAME_STATIC
     PRIVATE
         RECONSTRUCT_ONE_FRAME_BUILDING_LIBRARY
+)
+
+target_link_libraries(reconstructOneFrame
+    PRIVATE
+        ${OpenCV_LIBS}
 )
 
 if(MSVC)
@@ -69,7 +81,26 @@ set_source_files_properties(
     src/reconstruction/PointCloudReconstructorCuda.cu
     PROPERTIES LANGUAGE CUDA
 )
-set_target_properties(reconstructOneFrame PROPERTIES CUDA_RUNTIME_LIBRARY Shared)
+set_target_properties(reconstructOneFrame PROPERTIES
+    CUDA_RUNTIME_LIBRARY Shared
+    WINDOWS_EXPORT_ALL_SYMBOLS ON
+)
+
+if(WIN32 AND EXISTS "${THIRDPARTY}/opencv453/x64/vc15/bin")
+    add_custom_command(TARGET reconstructOneFrame POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<$<CONFIG:Debug>:${THIRDPARTY}/opencv453/x64/vc15/bin/opencv_world453d.dll>$<$<NOT:$<CONFIG:Debug>>:${THIRDPARTY}/opencv453/x64/vc15/bin/opencv_world453.dll>"
+            "$<TARGET_FILE_DIR:reconstructOneFrame>"
+    )
+endif()
+
+if(WIN32 AND CUDAToolkit_BIN_DIR AND EXISTS "${CUDAToolkit_BIN_DIR}/cudart64_12.dll")
+    add_custom_command(TARGET reconstructOneFrame POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CUDAToolkit_BIN_DIR}/cudart64_12.dll"
+            "$<TARGET_FILE_DIR:reconstructOneFrame>"
+    )
+endif()
 
 add_executable(reconstructSample
     src/sample/reconstructSample.cpp

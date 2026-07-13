@@ -171,6 +171,12 @@ CalibrationModel makeDenseCheckerboardCalibration()
 StripeFrameGroup makeDenseFrame()
 {
     static std::vector<unsigned char> color(32 * 32, 180);
+    static std::vector<unsigned char> texture(32 * 32 * 3, 0);
+    for (std::size_t pixel = 0; pixel < 32U * 32U; ++pixel) {
+        texture[pixel * 3U + 0U] = 41;
+        texture[pixel * 3U + 1U] = 73;
+        texture[pixel * 3U + 2U] = 123;
+    }
     StripeFrameGroup frame;
     ImageView image;
     image.data = color.data();
@@ -180,6 +186,16 @@ StripeFrameGroup makeDenseFrame()
     image.strideBytes = 32;
     image.elementType = ImageElementType::UInt8;
     frame.leftStripes.push_back({CameraSide::Left, 2, 4, 13, image});
+
+    ImageView textureView;
+    textureView.data = texture.data();
+    textureView.width = 32;
+    textureView.height = 32;
+    textureView.channels = 3;
+    textureView.strideBytes = 32 * 3;
+    textureView.elementType = ImageElementType::UInt8;
+    frame.leftColor = textureView;
+    frame.color = textureView;
     return frame;
 }
 
@@ -323,6 +339,25 @@ int main()
             "expected center hole before smoothing");
     require(denseRaw.gridPoints[probeIndex].z > 0.0F,
             "expected valid point next to center hole");
+
+    ReconsConfig denseColorConfig = denseRawConfig;
+    denseColorConfig.colorTextureEnabled = true;
+    denseColorConfig.colorGamma = 1.0;
+    denseColorConfig.colorCorrectionMatrix = {
+        1.0, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0
+    };
+    PointCloudReconstructionResult denseColor =
+        reconstructPointCloudCuda(densePhase, denseCalibration, denseColorConfig, denseFrame);
+    require(denseColor.status.ok(), "expected dense textured surface to reconstruct");
+    require(denseColor.rectifiedColorBgr.size() == 32U * 32U * 3U,
+            "expected full rectified color output");
+    const std::size_t holeColorBase = static_cast<std::size_t>(holeIndex) * 3U;
+    require(denseColor.rectifiedColorBgr[holeColorBase + 0U] == 41 &&
+                denseColor.rectifiedColorBgr[holeColorBase + 1U] == 73 &&
+                denseColor.rectifiedColorBgr[holeColorBase + 2U] == 123,
+            "expected invalid-depth pixel to retain its independent BGR preview color");
 
     ReconsConfig denseSmoothConfig = denseRawConfig;
     denseSmoothConfig.pointCloudSmoothingEnabled = true;

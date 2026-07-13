@@ -422,3 +422,20 @@
 - 代码质量审查发现 `includeColor=true` 默认值会让旧四参数调用隐式启用颜色 I/O；已移除默认参数，所有调用方必须显式表达颜色消费需求。
 - 两个 loader 原先依赖 `loadReconsConfig()` 保证 `colorTextureProjectorIndices.size()==3`；已增加本地校验，直接构造非法配置也返回 `ConfigInvalidValue`，不再可能越界访问。
 - 极端损坏 BMP 的尺寸溢出仍是 P3 风险；当前真实设备 BMP、全量 Upper 数据和测试均未触发，本轮保留为后续 parser hardening 项。
+
+## 2026-07-13 DSSI/Legacy 热加载审查发现
+
+- DSSI 与 Legacy 的既有配合方式是 `LoadLibrary* -> threeScan_*`，函数名是 C-export，但签名跨 DLL 传递 `cv::Mat`、`std::string` 和 `std::vector<std::string>`；这不是稳定 C ABI，只适合作为同编译器/同运行时下的短期兼容层。
+- 为不重写 DSSI 扫描热路径，本轮保留 `threeScan_*` 兼容 ABI，并在 `reconstructOneFrame.dll` 中实现 shim；未来稳定 ABI 仍应使用 opaque handle、POD 结构、pointer+count 和显式释放规则。
+- Legacy `threeScan::init()` 返回 `image_count = FREQ * STEP + 3`，假设每频率相移步数一致；Res1F shim 改为从 `stripeRequirements` 和 `colorTextureProjectorIndices` 计算最大 projector index，保留每频率不同步数契约。
+- 当前配置 `phaseStepCounts=[3,5,5]`、`colorTextureProjectorIndices=[16,17,18]`，因此 DSSI 仍会按 18 张投影图分组采集，且低频 3 步不会被错误扩展成全局 5 步参与算法。
+- 初次真实加载 `reconstructOneFrame.dll` 失败 `126`，不是缺少 `threeScan_*` 导出，而是 CUDA runtime 初始化阶段还需要 `%CUDA_PATH%\bin` 搜索路径；仅复制 `cudart64_12.dll` 到 DLL 同目录不足以覆盖该延迟依赖。
+- DSSI loader 使用 `AddDllDirectory` 注册 Res1F DLL 目录和 `%CUDA_PATH%\bin` 后，C# P/Invoke smoke 可成功 `LoadLibraryEx` 并解析全部 `threeScan_*`。
+- 相比旧式 `SetDllDirectoryA`，当前 DSSI loader 优化为 loader 生命周期内的目录 cookie 管理，减少进程级 DLL 搜索路径副作用，并在缺失符号时报出具体符号名。
+
+## 2026-07-13 DSSI 标定默认格式发现
+
+- Res1F 设计首选外部 MPS `calibResult.json`；`calibParams.yml` 应视为 Legacy 兼容/对比输入，而不是 DSSI 适配后的默认标定结果文件。
+- 当前 `loadCalibrationResultJson()` 函数名偏旧，实际逻辑是：内容看起来是 JSON object 时走 `parseCalibrationJson()`，否则走 OpenCV YAML parser。因此 DSSI 改成 `calibResult.json` 不会丢失 YAML 回退能力。
+- 真实 `D:\Data\Calib\2607011016_mach6\calibResult.json` 已用 sample dry-run 验证可读，标定契约检查通过。
+- 既有历史 Legacy 点云最贴近 `calibParams.yml` 的结论仍有效；这只影响 Legacy 对齐 benchmark 的显式 `--calib` 选择，不应阻止 DSSI/Res1F 默认转向 `calibResult.json`。

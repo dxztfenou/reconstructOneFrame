@@ -519,3 +519,41 @@
   - CTest `10/10` 通过。
   - `git diff --check` 通过。
 - 本轮未修改 Legacy，未提交，未推送。
+
+## 2026-07-13 DSSI 热加载适配
+
+- 用户要求下游 DSSI 必须加载 `D:\code\reconstructOneFrame\build\Release\reconstructOneFrame.dll`，并审查此前 DSSI/Legacy 配合是否合理。
+- 将 `reconstructOneFrame` 库目标改为 `SHARED`，新增 DSSI 兼容 shim `src/dssi/DssiThreeScanCompat.cpp`，导出 Legacy 兼容的 `threeScan_create/init/prepareData/startScan/destroy/delete`。
+- shim 保留当前 DSSI 热路径所需的 `cv::Mat/std::string/std::vector` 旧 ABI，仅作为过渡兼容层；公开头文件仍保留未来稳定 POD/opaque-handle C ABI 区域。
+- 为 DSSI 完整帧消费新增 `InitOptions::materializeFrameOutputs` 和 `FrameResult` 的 full-frame `depthXyz/normalXyz/colorBgr/qualityInfoU16` 输出；普通 benchmark/count-only 路径仍不物化这些大数组。
+- CMake 增加 OpenCV 4.5.3 链接、`WINDOWS_EXPORT_ALL_SYMBOLS`、post-build 复制 `opencv_world453.dll` 和 `cudart64_12.dll`。
+- 使用 `dumpbin /exports` 确认 `reconstructOneFrame.dll` 已导出全部 `threeScan_*` 符号。
+- 初次 `LoadLibraryEx(..., LOAD_WITH_ALTERED_SEARCH_PATH)` smoke 失败，错误 `126`；`dumpbin /dependents` 显示一级依赖为 OpenCV、CUDA runtime 和 VC runtime。
+- 复制 `cudart64_12.dll` 后，裸 `LoadLibraryEx` 仍失败；把 `D:\code\reconstructOneFrame\build\Release` 和 `%CUDA_PATH%\bin` 注册到 DLL 搜索路径后加载成功，说明 CUDA runtime 初始化还需要 CUDA bin 中的延迟依赖。
+- 当前 DSSI worktree 已改用 `AddDllDirectory` 注册 Res1F DLL 目录和 `%CUDA_PATH%\bin`，并用 `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS | LOAD_LIBRARY_SEARCH_USER_DIRS` 加载，避免旧式全局 `SetDllDirectory` 污染。
+- Res1F 验证已执行：
+  - `cmake -B build -S . -DCMAKE_BUILD_TYPE=Release`：成功；
+  - `cmake --build build --config Release --target reconstructOneFrame`：成功；
+  - `cmake --build build --config Release`：成功；
+  - `ctest --test-dir build -C Release --output-on-failure`：`10/10` 通过；
+  - `dumpbin /exports build\Release\reconstructOneFrame.dll`：包含全部 `threeScan_*`；
+  - C# P/Invoke smoke：`AddDllDirectory` 后 `LoadLibraryEx` 成功。
+- DSSI worktree 验证已执行：
+  - `cmake --build build --config Release --target DentalScanSystem`：成功；
+  - `ctest --test-dir build -C Release --output-on-failure`：未发现测试；
+  - `git diff --check`：通过，仅有 CRLF 工作区提示；
+  - 仍有既有 `ServiceInterface.h` C4091 和 spdlog/fmt LNK4286 警告，本轮未改。
+
+## 2026-07-13 DSSI 标定路径切换
+
+- 用户指出 DSSI 读取标定结果文件也应随 Res1F 改成 JSON；核对后确认：
+  - `CalibrationModel::loadCalibrationResultJson()` 名称仍带 `Json`，但当前实现已经按文件内容同时支持 OpenCV matrix JSON 和 Legacy OpenCV YAML；
+  - `D:\Data\Calib\2607011016_mach6\calibResult.json` 和 `calibParams.yml` 都存在；
+  - `calibResult.json` dry-run 已通过，返回 `StatusCode::Ok`。
+- 将 Res1F DSSI shim 默认标定路径从 `D:\Data\Calib\2607011016_mach6\calibParams.yml` 改为 `D:\Data\Calib\2607011016_mach6\calibResult.json`。
+- 将 DSSI worktree 的 `algorithmCalib` 默认值和配置文件同样改为 `D:/Data/Calib/2607011016_mach6/calibResult.json`。
+- 验证已执行：
+  - `build\Release\reconstructSample.exe --config D:/code/reconstructOneFrame/config/reconsAlgPara.json --calib D:/Data/Calib/2607011016_mach6/calibResult.json --dry-run`：成功；
+  - `cmake --build build --config Release --target reconstructOneFrame`：成功；
+  - `cmake --build build --config Release --target DentalScanSystem`：成功；
+  - P/Invoke smoke 设置 `ROF_CALIB_PATH=D:/Data/Calib/2607011016_mach6/calibResult.json` 后可 `LoadLibraryEx`、`threeScan_create/destroy/delete`。

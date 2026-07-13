@@ -1515,6 +1515,9 @@ PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseRes
             result.vertices.push_back(vertex);
         }
     }
+    if (materializeColor) {
+        result.rectifiedColorBgr = std::move(rectifiedColor);
+    }
     materializeMs = elapsedMilliseconds(timingStart);
     result.pointCloudStageSummary =
         "rawValid=" + std::to_string(result.rawValidPointCount) +

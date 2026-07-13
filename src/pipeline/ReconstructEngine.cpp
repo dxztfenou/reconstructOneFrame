@@ -51,6 +51,7 @@ Status ReconstructEngine::init(const InitOptions& options)
     pipelineOptions.dryRun = options.dryRun;
     pipelineOptions.dryRunNoCalib = options.dryRunNoCalib;
     pipelineOptions.writePly = options.writePly;
+    pipelineOptions.materializeFrameOutputs = options.materializeFrameOutputs;
     pipelineOptions.outputPerFrameSubdirectory = options.outputPerFrameSubdirectory;
     pipelineOptions.outputDirectory = options.outputDirectory;
     pipelineOptions.compareLegacyPlyPath = options.compareLegacyPlyPath;

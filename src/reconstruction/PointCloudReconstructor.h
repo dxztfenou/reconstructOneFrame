@@ -53,6 +53,8 @@ struct PointCloudReconstructionResult {
     std::string matchingSummary;
     std::vector<PointCloudGridPoint> gridPoints;
     std::vector<PointCloudVertex> vertices;
+    // Full rectified BGR preview, independent of point-cloud validity.
+    std::vector<std::uint8_t> rectifiedColorBgr;
     std::size_t smoothedGridValidPointCount = 0;
     std::string pointCloudStageSummary;
     bool normalsComputed = false;
