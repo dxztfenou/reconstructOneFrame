@@ -68,6 +68,22 @@ CalibrationModel makeCalibration()
     return calibration;
 }
 
+CalibrationModel makeOnePixelShiftCalibration()
+{
+    CalibrationModel calibration = makeCalibration();
+    calibration.leftIntrinsics = {1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0};
+    calibration.rightIntrinsics = calibration.leftIntrinsics;
+    calibration.leftDistortion = {0.0, 0.0, 0.0, 0.0, 0.0};
+    calibration.rightDistortion = calibration.leftDistortion;
+    calibration.rectificationLeft = {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0};
+    calibration.rectificationRight = calibration.rectificationLeft;
+    calibration.projectionLeft = {1.0, 0.0, 0.0, 0.0,
+                                  0.0, 1.0, 0.0, 0.0,
+                                  0.0, 0.0, 1.0, 0.0};
+    calibration.projectionRight = calibration.projectionLeft;
+    return calibration;
+}
+
 StripeFrameGroup makeFrame()
 {
     static std::vector<unsigned char> color(16 * 8, 180);
@@ -199,6 +215,15 @@ StripeFrameGroup makeDenseFrame()
     return frame;
 }
 
+StripeFrameGroup makeDenseFrameWithTexture(std::vector<unsigned char>& texture, bool metalScan)
+{
+    StripeFrameGroup frame = makeDenseFrame();
+    frame.metalScan = metalScan;
+    frame.leftColor.data = texture.data();
+    frame.color.data = texture.data();
+    return frame;
+}
+
 ReconsConfig makeDenseConfig()
 {
     ReconsConfig config = makeConfig();
@@ -265,6 +290,18 @@ int main()
     require(crossing.rightPhaseMonotonicRejectedPointCount == 8,
             "expected only one unsupported right-edge candidate per row");
     require(!crossing.matchingSummary.empty(), "expected matching diagnostic summary");
+
+    UnwrappedPhaseResult shiftedSensorPhase = makePhase(false);
+    PointCloudReconstructionResult shiftedSensor = reconstructPointCloudCuda(
+        shiftedSensorPhase, makeOnePixelShiftCalibration(), config, frame);
+    require(shiftedSensor.status.ok(), "expected shifted sensor-domain phase to reconstruct");
+    UnwrappedPhaseResult alreadyRectifiedPhase = makePhase(false);
+    alreadyRectifiedPhase.coordinateDomain = PhaseCoordinateDomain::Rectified;
+    PointCloudReconstructionResult alreadyRectified = reconstructPointCloudCuda(
+        alreadyRectifiedPhase, makeOnePixelShiftCalibration(), config, frame);
+    require(alreadyRectified.status.ok(), "expected already-rectified phase to reconstruct");
+    require(alreadyRectified.rawValidPointCount > shiftedSensor.rawValidPointCount,
+            "expected rectified phase to bypass the second one-pixel remap");
 
     ReconsConfig tightLeftRight = config;
     tightLeftRight.matchingLeftRightTolerance = 0.4;
@@ -358,6 +395,61 @@ int main()
                 denseColor.rectifiedColorBgr[holeColorBase + 1U] == 73 &&
                 denseColor.rectifiedColorBgr[holeColorBase + 2U] == 123,
             "expected invalid-depth pixel to retain its independent BGR preview color");
+
+    std::vector<unsigned char> saturatedPatch(32U * 32U * 3U, 30U);
+    const int saturatedX = 12;
+    const int saturatedY = 12;
+    saturatedPatch[(static_cast<std::size_t>(saturatedY) * 32U + saturatedX) * 3U] = 250U;
+    StripeFrameGroup metalPatchFrame = makeDenseFrameWithTexture(saturatedPatch, true);
+    ReconsConfig clearOffConfig = denseColorConfig;
+    clearOffConfig.clear255 = false;
+    PointCloudReconstructionResult clearOff =
+        reconstructPointCloudCuda(densePhase, denseCalibration, clearOffConfig, metalPatchFrame);
+    require(clearOff.status.ok(), "expected metal frame without clear255 to reconstruct");
+
+    ReconsConfig clearConfig = clearOffConfig;
+    clearConfig.clear255 = true;
+    clearConfig.clear255DilateRadius = 0;
+    PointCloudReconstructionResult clearResult =
+        reconstructPointCloudCuda(densePhase, denseCalibration, clearConfig, metalPatchFrame);
+    require(clearResult.status.ok(), "expected clear255 metal frame to reconstruct");
+    require(clearResult.clear255RejectedPixelCount == 4U,
+            "expected a saturated raw pixel to invalidate four bilinear neighborhoods");
+    require(clearResult.filteredGridValidPointCount < clearOff.filteredGridValidPointCount,
+            "expected clear255 to reject point-cloud support before matching");
+    const std::size_t maskedIndex = static_cast<std::size_t>(saturatedY) * 32U + saturatedX;
+    require(clearResult.gridPoints[maskedIndex].semanticBackground,
+            "expected clear255 rejection to use the Legacy semantic-background quality contract");
+    ReconsConfig dilatedClearConfig = clearConfig;
+    dilatedClearConfig.clear255DilateRadius = 1;
+    PointCloudReconstructionResult dilatedClear =
+        reconstructPointCloudCuda(densePhase, denseCalibration, dilatedClearConfig, metalPatchFrame);
+    require(dilatedClear.status.ok() &&
+                dilatedClear.clear255RejectedPixelCount > clearResult.clear255RejectedPixelCount,
+            "expected clear255 dilation to expand the invalid region");
+
+    StripeFrameGroup nonMetalPatchFrame = makeDenseFrameWithTexture(saturatedPatch, false);
+    PointCloudReconstructionResult nonMetalClear =
+        reconstructPointCloudCuda(densePhase, denseCalibration, clearConfig, nonMetalPatchFrame);
+    require(nonMetalClear.status.ok() && nonMetalClear.clear255RejectedPixelCount == 0U,
+            "expected clear255 to remain metal-only");
+
+    std::vector<unsigned char> highlightTexture(32U * 32U * 3U, 255U);
+    ReconsConfig highlightConfig = denseColorConfig;
+    highlightConfig.clear255 = false;
+    highlightConfig.colorHighlightCompressionEnabled = true;
+    StripeFrameGroup nonMetalHighlightFrame = makeDenseFrameWithTexture(highlightTexture, false);
+    PointCloudReconstructionResult compressedHighlight =
+        reconstructPointCloudCuda(densePhase, denseCalibration, highlightConfig, nonMetalHighlightFrame);
+    require(compressedHighlight.status.ok() && compressedHighlight.rectifiedColorBgr[0] == 250U,
+            "expected non-metal 255 highlight to compress to the Legacy-compatible 250 ceiling");
+
+    StripeFrameGroup metalHighlightFrame = makeDenseFrameWithTexture(highlightTexture, true);
+    PointCloudReconstructionResult uncompressedMetalHighlight =
+        reconstructPointCloudCuda(densePhase, denseCalibration, highlightConfig, metalHighlightFrame);
+    require(uncompressedMetalHighlight.status.ok() &&
+                uncompressedMetalHighlight.rectifiedColorBgr[0] == 255U,
+            "expected metal color to bypass non-metal highlight compression");
 
     ReconsConfig denseSmoothConfig = denseRawConfig;
     denseSmoothConfig.pointCloudSmoothingEnabled = true;

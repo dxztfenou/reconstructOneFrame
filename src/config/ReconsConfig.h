@@ -60,6 +60,9 @@ struct ReconsConfig {
         0.0, 0.0, 1.0, 0.0
     };
     double colorGamma = 1.0;
+    bool clear255 = false;
+    int clear255DilateRadius = 3;
+    bool colorHighlightCompressionEnabled = false;
     bool qualityInfoEnabled = true;
     double qualityInfoMinModulation = 8.0;
     bool qualityInfoReasonChannelEnabled = true;

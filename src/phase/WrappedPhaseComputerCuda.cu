@@ -1,5 +1,7 @@
 #include "phase/WrappedPhaseComputer.h"
 
+#include "calibration_model/CudaRectification.cuh"
+
 #include <cuda_runtime.h>
 #include <math_constants.h>
 
@@ -17,10 +19,42 @@ namespace {
 constexpr float kPi = 3.14159265358979323846F;
 constexpr int kWrappedPhaseBlockSize = 256;
 
+using cuda_rectification::RemapCalibration;
+using cuda_rectification::hasRectificationCalibration;
+using cuda_rectification::makeRemapCalibration;
+using cuda_rectification::rectifiedToRawPixel;
+
+__device__ float sampleBilinear(const unsigned char* image,
+                                int width,
+                                int height,
+                                float x,
+                                float y)
+{
+    if (!isfinite(x) || !isfinite(y) || x < 0.0F || y < 0.0F ||
+        x >= static_cast<float>(width - 1) || y >= static_cast<float>(height - 1)) {
+        return CUDART_NAN_F;
+    }
+    const int x0 = static_cast<int>(floorf(x));
+    const int y0 = static_cast<int>(floorf(y));
+    const float dx = x - static_cast<float>(x0);
+    const float dy = y - static_cast<float>(y0);
+    const float v00 = static_cast<float>(image[y0 * width + x0]);
+    const float v01 = static_cast<float>(image[y0 * width + x0 + 1]);
+    const float v10 = static_cast<float>(image[(y0 + 1) * width + x0]);
+    const float v11 = static_cast<float>(image[(y0 + 1) * width + x0 + 1]);
+    const float top = v00 * (1.0F - dx) + v01 * dx;
+    const float bottom = v10 * (1.0F - dx) + v11 * dx;
+    return top * (1.0F - dy) + bottom * dy;
+}
+
 __global__ void computeWrappedPhaseKernel(const unsigned char* const* steps,
                                           int stepCount,
+                                          int width,
+                                          int height,
                                           int pixelCount,
                                           int direction,
+                                          RemapCalibration remap,
+                                          int useRectification,
                                           float* phase,
                                           float* modulation,
                                           float* modulationStats)
@@ -30,16 +64,33 @@ __global__ void computeWrappedPhaseKernel(const unsigned char* const* steps,
     if (pixel < pixelCount) {
         float sinSum = 0.0F;
         float cosSum = 0.0F;
+        // Rectify each intensity sample before atan2/fringe-order computation.
+        // Remapping the final phase is mathematically different at phase wraps.
+        float sourceX = static_cast<float>(pixel % width);
+        float sourceY = static_cast<float>(pixel / width);
+        bool valid = useRectification == 0 ||
+            rectifiedToRawPixel(pixel % width, pixel / width, remap, sourceX, sourceY);
         const float sign = direction == 0 ? 1.0F : static_cast<float>(direction);
         for (int step = 0; step < stepCount; ++step) {
-            const float intensity = static_cast<float>(steps[step][pixel]);
+            const float intensity = useRectification != 0
+                ? sampleBilinear(steps[step], width, height, sourceX, sourceY)
+                : static_cast<float>(steps[step][pixel]);
+            if (!isfinite(intensity)) {
+                valid = false;
+                break;
+            }
             const float angle = sign * 2.0F * kPi * static_cast<float>(step) / static_cast<float>(stepCount);
             sinSum += intensity * sinf(angle);
             cosSum += intensity * cosf(angle);
         }
-        phase[pixel] = atan2f(-sinSum, cosSum);
-        modulationValue = 2.0F * sqrtf(sinSum * sinSum + cosSum * cosSum) / static_cast<float>(stepCount);
-        modulation[pixel] = modulationValue;
+        if (valid) {
+            phase[pixel] = atan2f(-sinSum, cosSum);
+            modulationValue = 2.0F * sqrtf(sinSum * sinSum + cosSum * cosSum) / static_cast<float>(stepCount);
+            modulation[pixel] = modulationValue;
+        } else {
+            phase[pixel] = CUDART_NAN_F;
+            modulation[pixel] = 0.0F;
+        }
     }
 
     __shared__ float blockSum[kWrappedPhaseBlockSize];
@@ -158,7 +209,9 @@ Status ensureCudaCompatible(const std::vector<const StripeImage*>& steps)
 Status computeOneCuda(CameraSide camera,
                       const std::vector<StripeImage>& images,
                       const StripeRequirement& requirement,
+                      const RemapCalibration* remap,
                       WrappedPhaseFrequencyResult& output,
+                      WrappedPhaseWorkspace& workspace,
                       bool materializeModulation)
 {
     const std::vector<const StripeImage*> steps =
@@ -184,7 +237,6 @@ Status computeOneCuda(CameraSide camera,
     }
     output.validPixelCount = static_cast<std::size_t>(pixelCount);
 
-    thread_local WrappedPhaseWorkspace workspace;
     workspace.images.resize(static_cast<std::size_t>(requirement.requiredPhaseSteps));
     std::vector<const unsigned char*> deviceImagePtrs(static_cast<std::size_t>(requirement.requiredPhaseSteps), nullptr);
     for (int step = 0; step < requirement.requiredPhaseSteps; ++step) {
@@ -248,11 +300,16 @@ Status computeOneCuda(CameraSide camera,
     }
 
     const int gridSize = (pixelCount + kWrappedPhaseBlockSize - 1) / kWrappedPhaseBlockSize;
+    const RemapCalibration remapValue = remap == nullptr ? RemapCalibration{} : *remap;
     computeWrappedPhaseKernel<<<gridSize, kWrappedPhaseBlockSize>>>(
         static_cast<const unsigned char* const*>(workspace.pointerTable.ptr),
         requirement.requiredPhaseSteps,
+        first.width,
+        first.height,
         pixelCount,
         requirement.phaseStepDirection,
+        remapValue,
+        remap == nullptr ? 0 : 1,
         static_cast<float*>(workspace.phase.ptr),
         static_cast<float*>(workspace.modulation.ptr),
         static_cast<float*>(workspace.modulationStats.ptr));
@@ -291,10 +348,34 @@ Status computeOneCuda(CameraSide camera,
 
 } // namespace
 
-WrappedPhaseResult computeWrappedPhaseCuda(const StripeFrameGroup& frame,
-                                           const ReconsConfig& config,
-                                           const WrappedPhaseOptions& options)
+struct WrappedPhaseCudaWorkspace::Impl {
+    WrappedPhaseWorkspace workspace;
+};
+
+WrappedPhaseCudaWorkspace::WrappedPhaseCudaWorkspace()
+    : impl_(std::make_unique<Impl>())
 {
+}
+
+WrappedPhaseCudaWorkspace::~WrappedPhaseCudaWorkspace() = default;
+WrappedPhaseCudaWorkspace::WrappedPhaseCudaWorkspace(WrappedPhaseCudaWorkspace&&) noexcept = default;
+WrappedPhaseCudaWorkspace& WrappedPhaseCudaWorkspace::operator=(WrappedPhaseCudaWorkspace&&) noexcept = default;
+
+void WrappedPhaseCudaWorkspace::reset() noexcept
+{
+    impl_.reset();
+}
+
+WrappedPhaseResult computeWrappedPhaseCudaImpl(const StripeFrameGroup& frame,
+                                               const ReconsConfig& config,
+                                               const CalibrationModel* calibration,
+                                               WrappedPhaseCudaWorkspace& workspaceHandle,
+                                               const WrappedPhaseOptions& options)
+{
+    if (!workspaceHandle.impl_) {
+        workspaceHandle.impl_ = std::make_unique<WrappedPhaseCudaWorkspace::Impl>();
+    }
+    WrappedPhaseWorkspace& workspace = workspaceHandle.impl_->workspace;
     int deviceCount = 0;
     cudaError_t error = cudaGetDeviceCount(&deviceCount);
     if (error != cudaSuccess || deviceCount <= 0) {
@@ -309,13 +390,31 @@ WrappedPhaseResult computeWrappedPhaseCuda(const StripeFrameGroup& frame,
     WrappedPhaseResult result;
     result.stats.stageName = "wrapped_phase_compute_cuda";
     result.stats.inputImageCount = frame.leftStripes.size() + frame.rightStripes.size();
+    // Partial calibration stays in the sensor-domain compatibility path; only
+    // a complete stereo contract may label the produced phase as Rectified.
+    const bool rectificationAvailable = calibration != nullptr && hasRectificationCalibration(*calibration);
+    RemapCalibration leftRemap;
+    RemapCalibration rightRemap;
+    if (rectificationAvailable) {
+        leftRemap = makeRemapCalibration(calibration->leftIntrinsics,
+                                         calibration->leftDistortion,
+                                         calibration->rectificationLeft,
+                                         calibration->projectionLeft);
+        rightRemap = makeRemapCalibration(calibration->rightIntrinsics,
+                                          calibration->rightDistortion,
+                                          calibration->rectificationRight,
+                                          calibration->projectionRight);
+        result.coordinateDomain = PhaseCoordinateDomain::Rectified;
+    }
 
     for (const StripeRequirement& requirement : config.stripeRequirements) {
         WrappedPhaseFrequencyResult left;
         Status status = computeOneCuda(CameraSide::Left,
                                        frame.leftStripes,
                                        requirement,
+                                       rectificationAvailable ? &leftRemap : nullptr,
                                        left,
+                                       workspace,
                                        options.materializeModulation);
         if (!status.ok()) {
             result.status = status;
@@ -327,7 +426,9 @@ WrappedPhaseResult computeWrappedPhaseCuda(const StripeFrameGroup& frame,
         status = computeOneCuda(CameraSide::Right,
                                 frame.rightStripes,
                                 requirement,
+                                rectificationAvailable ? &rightRemap : nullptr,
                                 right,
+                                workspace,
                                 options.materializeModulation);
         if (!status.ok()) {
             result.status = status;
@@ -355,6 +456,40 @@ WrappedPhaseResult computeWrappedPhaseCuda(const StripeFrameGroup& frame,
     result.status = {};
     result.stats.status = {};
     return result;
+}
+
+WrappedPhaseResult computeWrappedPhaseCuda(const StripeFrameGroup& frame,
+                                           const ReconsConfig& config,
+                                           WrappedPhaseCudaWorkspace& workspace,
+                                           const WrappedPhaseOptions& options)
+{
+    return computeWrappedPhaseCudaImpl(frame, config, nullptr, workspace, options);
+}
+
+WrappedPhaseResult computeWrappedPhaseCuda(const StripeFrameGroup& frame,
+                                           const ReconsConfig& config,
+                                           const CalibrationModel& calibration,
+                                           WrappedPhaseCudaWorkspace& workspace,
+                                           const WrappedPhaseOptions& options)
+{
+    return computeWrappedPhaseCudaImpl(frame, config, &calibration, workspace, options);
+}
+
+WrappedPhaseResult computeWrappedPhaseCuda(const StripeFrameGroup& frame,
+                                           const ReconsConfig& config,
+                                           const WrappedPhaseOptions& options)
+{
+    WrappedPhaseCudaWorkspace workspace;
+    return computeWrappedPhaseCuda(frame, config, workspace, options);
+}
+
+WrappedPhaseResult computeWrappedPhaseCuda(const StripeFrameGroup& frame,
+                                           const ReconsConfig& config,
+                                           const CalibrationModel& calibration,
+                                           const WrappedPhaseOptions& options)
+{
+    WrappedPhaseCudaWorkspace workspace;
+    return computeWrappedPhaseCuda(frame, config, calibration, workspace, options);
 }
 
 } // namespace reconstruct_one_frame

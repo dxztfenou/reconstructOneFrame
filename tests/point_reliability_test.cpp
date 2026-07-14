@@ -73,6 +73,24 @@ void testQualityReasonsAndSentinel()
     check(result.frameStats.validPoints > 0, "summary counts valid points");
     check(result.frameStats.lowQualityReasonBits != ReasonNone, "summary accumulates low quality reasons");
     check(result.summary.find("frameQualityScore=") != std::string::npos, "summary formats frame score");
+
+    PointCloudReconstructionResult maskedPointCloud = makePointCloud();
+    maskedPointCloud.semanticMaskApplied = true;
+    maskedPointCloud.gridPoints[5].semanticBackground = true;
+    PointReliabilityResult masked = evaluatePointReliability(maskedPointCloud, config);
+    check(masked.map.pixels[1].semanticClass == 1.0,
+          "active clear255 mask marks valid pixels as semantic foreground");
+    check(masked.map.pixels[5].semanticClass == 0.0 &&
+              (masked.map.pixels[5].reason & ReasonSemanticBackground) != 0U,
+          "active clear255 mask preserves semantic background rejection");
+
+    config.qualityInfoReasonChannelEnabled = false;
+    PointReliabilityResult reasonsDisabled = evaluatePointReliability(maskedPointCloud, config);
+    check(reasonsDisabled.map.pixels[5].reason == ReasonNone,
+          "disabled reason channel clears per-pixel reasons");
+    check((reasonsDisabled.map.pixels[0].reason &
+              (ReasonHighMatchCost | ReasonCandidateAmbiguous | ReasonSemanticBackground)) == 0U,
+          "disabled reason channel keeps pixel reasons out of the frame sentinel");
 }
 
 } // namespace

@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(reconstructOneFrame
     VERSION 0.1.0
-    LANGUAGES CXX CUDA
+    LANGUAGES C CXX CUDA
 )
 
 set(CMAKE_CXX_STANDARD 17)
@@ -21,11 +21,10 @@ endif()
 find_package(OpenCV 4.5.3 REQUIRED)
 find_package(CUDAToolkit REQUIRED)
 
-add_library(reconstructOneFrame SHARED
+set(ROF_CORE_SOURCES
     src/calibration_model/CalibrationJsonReader.cpp
     src/calibration_model/CalibrationModel.cpp
     src/config/ReconsConfig.cpp
-    src/dssi/DssiThreeScanCompat.cpp
     src/diagnostics/DiagnosticSummary.cpp
     src/diagnostics/Status.cpp
     src/image/ImagePreprocessor.cpp
@@ -43,6 +42,31 @@ add_library(reconstructOneFrame SHARED
     src/reconstruction/PointCloudReconstructorCuda.cu
 )
 
+add_library(rofCore STATIC ${ROF_CORE_SOURCES})
+
+target_include_directories(rofCore
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${OpenCV_INCLUDE_DIRS}
+)
+
+target_compile_definitions(rofCore
+    PUBLIC
+        RECONSTRUCT_ONE_FRAME_STATIC
+)
+
+target_link_libraries(rofCore
+    PRIVATE
+        ${OpenCV_LIBS}
+)
+
+add_library(reconstructOneFrame SHARED
+    src/dssi/DssiThreeScanCompat.cpp
+    src/plugin/RofCApi.cpp
+)
+
 target_include_directories(reconstructOneFrame
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -53,26 +77,29 @@ target_include_directories(reconstructOneFrame
 
 target_compile_definitions(reconstructOneFrame
     PRIVATE
-        RECONSTRUCT_ONE_FRAME_BUILDING_LIBRARY
+        ROF_C_API_BUILDING_LIBRARY
 )
 
 target_link_libraries(reconstructOneFrame
     PRIVATE
+        rofCore
         ${OpenCV_LIBS}
 )
 
 if(MSVC)
-    target_compile_options(reconstructOneFrame
+    target_compile_options(rofCore
         PRIVATE
             $<$<COMPILE_LANGUAGE:CXX>:/W4 /permissive->
             $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/W4>
     )
+    target_compile_options(reconstructOneFrame PRIVATE /W4 /permissive-)
 else()
-    target_compile_options(reconstructOneFrame
+    target_compile_options(rofCore
         PRIVATE
             $<$<COMPILE_LANGUAGE:CXX>:-Wall -Wextra -Wpedantic>
             $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Wall,-Wextra>
     )
+    target_compile_options(reconstructOneFrame PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
 set_source_files_properties(
@@ -81,9 +108,8 @@ set_source_files_properties(
     src/reconstruction/PointCloudReconstructorCuda.cu
     PROPERTIES LANGUAGE CUDA
 )
-set_target_properties(reconstructOneFrame PROPERTIES
+set_target_properties(rofCore reconstructOneFrame PROPERTIES
     CUDA_RUNTIME_LIBRARY Shared
-    WINDOWS_EXPORT_ALL_SYMBOLS ON
 )
 
 if(WIN32 AND EXISTS "${THIRDPARTY}/opencv453/x64/vc15/bin")
@@ -113,16 +139,21 @@ target_include_directories(reconstructSample
 
 target_link_libraries(reconstructSample
     PRIVATE
-        reconstructOneFrame
+        rofCore
 )
 
 include(CTest)
 
 if(BUILD_TESTING)
+    add_executable(rof_c_header_compile_test tests/rof_c_header_compile_test.c)
+    target_include_directories(rof_c_header_compile_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    add_test(NAME rof_c_header_compile_test COMMAND rof_c_header_compile_test)
+    set_tests_properties(rof_c_header_compile_test PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     function(rof_add_test name source)
         add_executable(${name} ${source})
         target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-        target_link_libraries(${name} PRIVATE reconstructOneFrame)
+        target_link_libraries(${name} PRIVATE rofCore)
         add_test(NAME ${name} COMMAND ${name})
         set_tests_properties(${name} PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endfunction()
@@ -137,4 +168,26 @@ if(BUILD_TESTING)
     rof_add_test(phase_unwrapper_test tests/phase_unwrapper_test.cpp)
     rof_add_test(point_cloud_reconstructor_test tests/point_cloud_reconstructor_test.cpp)
     rof_add_test(point_reliability_test tests/point_reliability_test.cpp)
+    rof_add_test(engine_descriptor_test tests/engine_descriptor_test.cpp)
+
+    add_executable(rof_plugin_contract_test tests/rof_plugin_contract_test.cpp)
+    target_link_libraries(rof_plugin_contract_test PRIVATE reconstructOneFrame)
+    add_test(NAME rof_plugin_contract_test COMMAND rof_plugin_contract_test)
+    set_tests_properties(rof_plugin_contract_test PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
+    add_executable(rof_abi_layout_test tests/rof_abi_layout_test.cpp)
+    target_include_directories(rof_abi_layout_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    add_test(NAME rof_abi_layout_test COMMAND rof_abi_layout_test)
+    set_tests_properties(rof_abi_layout_test PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
+    if(WIN32)
+        add_executable(rof_dll_exports_test tests/rof_dll_exports_test.cpp)
+        target_include_directories(rof_dll_exports_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+        add_test(NAME rof_dll_exports_test
+            COMMAND rof_dll_exports_test
+                $<TARGET_FILE:reconstructOneFrame>
+                "${CMAKE_CURRENT_SOURCE_DIR}/config/reconsAlgPara.json"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/data/phase2_valid_calibResult.json")
+        set_tests_properties(rof_dll_exports_test PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endif()
 endif()

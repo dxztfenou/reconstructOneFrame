@@ -79,6 +79,9 @@ Status loadReconsConfig(const std::string& path, ReconsConfig& config)
     (void)json.getIntArray("colorTextureProjectorIndices", parsed.colorTextureProjectorIndices);
     (void)json.getDoubleArray("colorCorrectionMatrix", parsed.colorCorrectionMatrix);
     (void)json.getDouble("colorGamma", parsed.colorGamma);
+    (void)json.getBool("clear255", parsed.clear255);
+    (void)json.getInt("clear255DilateRadius", parsed.clear255DilateRadius);
+    (void)json.getBool("colorHighlightCompressionEnabled", parsed.colorHighlightCompressionEnabled);
     (void)json.getBool("qualityInfoEnabled", parsed.qualityInfoEnabled);
     (void)json.getBool("qualityMapEnabled", parsed.qualityInfoEnabled);
     (void)json.getDouble("qualityInfoMinModulation", parsed.qualityInfoMinModulation);
@@ -181,6 +184,12 @@ Status loadReconsConfig(const std::string& path, ReconsConfig& config)
             return {StatusCode::ConfigInvalidValue, "ReconsConfig", "colorGamma must be positive"};
         }
     }
+    if (parsed.clear255DilateRadius < 0 || parsed.clear255DilateRadius > 32) {
+        return {StatusCode::ConfigInvalidValue, "ReconsConfig", "clear255DilateRadius must be in [0, 32]"};
+    }
+    if (parsed.clear255 && parsed.colorTextureProjectorIndices.size() != 3) {
+        return {StatusCode::ConfigInvalidValue, "ReconsConfig", "clear255 requires three auxiliary projector indices"};
+    }
     if (parsed.qualityInfoMinModulation < 0.0 ||
         parsed.qualityInfoPhaseCostThreshold <= 0.0 ||
         parsed.qualityInfoMaxCandidateCount <= 0 ||
@@ -262,6 +271,10 @@ std::string summarizeConfig(const ReconsConfig& config)
     }
     out << "]"
         << ", colorGamma=" << config.colorGamma
+        << ", clear255=" << (config.clear255 ? "true" : "false")
+        << ", clear255DilateRadius=" << config.clear255DilateRadius
+        << ", colorHighlightCompressionEnabled="
+        << (config.colorHighlightCompressionEnabled ? "true" : "false")
         << ", qualityInfoEnabled=" << (config.qualityInfoEnabled ? "true" : "false")
         << ", qualityInfoMinModulation=" << config.qualityInfoMinModulation
         << ", qualityInfoPhaseCostThreshold=" << config.qualityInfoPhaseCostThreshold

@@ -3,6 +3,8 @@
 > 日期：2026-07-09
 > 项目：`D:\code\reconstructOneFrame`
 > 阶段定位：在第五阶段真实 CUDA 点云重建后，仿照 Legacy 单帧点质量图与整帧质量统计，建立质量评价输出契约。
+>
+> 当前契约（2026-07-13）：Res1F 验证只允许 `calibResult.json`；Legacy 的 `calibParams.yml` 由 Legacy runtime 自行读取。
 
 ## 1. 目标
 
@@ -37,7 +39,7 @@
 ```powershell
 cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
-build\Release\reconstructSample.exe --config D:\Data\Calib\2607011016_mach6\singleStripe\output\run_config.json --calib D:\Data\Calib\2607011016_mach6\calibParams.yml --single-stripe-root D:\Data\Calib\2607011016_mach6\singleStripe --group 1 --output build\phase6\group1_quality --compare-legacy D:\Data\Calib\2607011016_mach6\singleStripe\output\1\depth_points.ply
+build\Release\reconstructSample.exe --config D:\Data\Calib\2607011016_mach6\singleStripe\output\run_config.json --calib D:\Data\Calib\2607011016_mach6\calibResult.json --single-stripe-root D:\Data\Calib\2607011016_mach6\singleStripe --group 1 --output build\phase6\group1_quality --compare-legacy D:\Data\Calib\2607011016_mach6\singleStripe\output\1\depth_points.ply
 ```
 
 ## 5. 验收口径

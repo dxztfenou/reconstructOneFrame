@@ -439,3 +439,106 @@
 - 当前 `loadCalibrationResultJson()` 函数名偏旧，实际逻辑是：内容看起来是 JSON object 时走 `parseCalibrationJson()`，否则走 OpenCV YAML parser。因此 DSSI 改成 `calibResult.json` 不会丢失 YAML 回退能力。
 - 真实 `D:\Data\Calib\2607011016_mach6\calibResult.json` 已用 sample dry-run 验证可读，标定契约检查通过。
 - 既有历史 Legacy 点云最贴近 `calibParams.yml` 的结论仍有效；这只影响 Legacy 对齐 benchmark 的显式 `--calib` 选择，不应阻止 DSSI/Res1F 默认转向 `calibResult.json`。
+
+## 2026-07-13 Phase 0/1 Res1F 插件边界实施发现
+
+- 关闭 `WINDOWS_EXPORT_ALL_SYMBOLS` 后，DLL 自身仍能成功生成，但样例和 7 个内部测试在 config、calibration、I/O、CUDA、quality、logging 符号上同时出现 `LNK2019`；根因是它们长期把插件 DLL 当作实现库链接，而不是单个导出声明遗漏。
+- 新的 `rofCore` 静态目标拥有全部算法、配置、I/O 和 CUDA 实现，并通过 `RECONSTRUCT_ONE_FRAME_STATIC` 向内部消费者关闭 import/export 装饰；`reconstructOneFrame` 共享目标只编译 `RofCApi.cpp` 与 `DssiThreeScanCompat.cpp`。
+- 样例和内部白盒测试链接 `rofCore`；`rof_plugin_contract_test` 仍链接共享插件，`rof_dll_exports_test` 只在运行时加载 DLL。该拆分既保留内部可测性，也不扩大外部 ABI。
+- Release 全量构建通过，CTest `14/14`；`dumpbin /exports` 只列出 `rof_get_api` 和 8 个迁移期 `threeScan_*`，没有算法实现符号泄漏。
+
+## 2026-07-13 Res1F 与 DSSI 跨仓库架构审计（进行中）
+
+- 当前主仓库为 `main@1accb19`，相对 `origin/main@a9bc725` 多出本地提交 `feat(dssi): add hot-load compatibility runtime`；工作区另有未跟踪 `output/` 与 `scripts/__pycache__/`。
+- 实际下游审计 worktree 为 `D:\code\_worktrees\dssi-adapt-res1f`，分支 `adapt-res1f@bc0ad329`；不能用 `D:\code\dentalscanserviceinterface` 主 worktree 代替其当前适配状态。
+- 本轮先验证两侧代码和真实数据流，再区分“兼容迁移措施”与“推荐长期架构”；不会因现有构建通过而默认 ABI、所有权或部署设计合理。
+- Res1F 当前仍以 C++17/CUDA 17 构建；单个 `reconstructOneFrame` SHARED target 同时编译核心算法、诊断、I/O、OpenCV 适配和 `DssiThreeScanCompat.cpp`，导致核心库与特定下游/特定 OpenCV ABI/部署策略物理耦合。
+- 公共头 `reconstructInterface.h` 导出的 C++ API 包含 `std::string`、`std::vector`、`std::unique_ptr` 和按值返回的 `FrameResult`；所谓稳定 C ABI 目前只有注释中的保留签名，没有可编译结构、版本协商或导出函数。
+- DSSI shim 的 `threeScan_*` 虽使用 `extern "C"` 名称，参数仍跨 DLL 传递 `cv::Mat`、`std::string`、`std::vector<std::string>` 和不透明但实际为 C++ 类的指针；它依赖同编译器、同 CRT、同 OpenCV 布局，不能作为长期插件 ABI。
+- shim 初始化先独立解析配置和标定以计算采集张数/返回 camera matrix，随后 `ReconstructEngine::init()` 再解析相同文件，存在重复 I/O、重复校验和两份状态来源。
+- shim 的默认 config/calibration 使用开发机绝对路径，并由 DSSI loader 通过进程级 `ROF_CONFIG_PATH` / `ROF_CALIB_PATH` 环境变量注入；多实例、并行算法或同进程切换配置时会互相污染。
+- 当前 DSSI 热帧输入是按组连续的 `float*`；shim 对每张条纹逐像素 `float -> uint8` 并新建 `vector<uint8_t>`，之后算法完整物化 `depth/normal/color/quality` 向量，shim 再对其构造临时 `cv::Mat` 并 `clone()`，形成多次整帧分配、转换和拷贝。
+- `FrameResult` 把运行状态、阶段诊断、多个字符串摘要和四类大图缓冲放进同一个按值返回对象；控制面与数据面未分离，输出需求只能由 `materializeFrameOutputs` 粗粒度布尔值控制。
+- shim 兼容入口忽略 `isAiScan`、`isMetalScan`、`exposure` 与 `basePath`，`prepareData` 为空实现；表面 ABI 兼容不等于语义兼容，需要显式 capability/unsupported-feature 契约。
+- DSSI 适配把算法后端、DLL、算法配置、标定路径加入 `ss_config.ini`，但默认仍是 `D:/code/...` 开发路径；部署包不自包含，且算法配置、标定、DLL 三者没有 manifest/version/hash 绑定。
+- DSSI 每个成功采集组都写 `Info` 级算法日志，失败路径可同步保存全部 SourceImg；这类热路径可观测性没有采样/异步/预算契约，需纳入实时性审计。
+- Res1F 的 `threeScan_init` 保留 Legacy `void` 签名；config 解析失败时设置 `imageCount=0`，但 calibration/engine 初始化失败发生在 capture count 计算之后，可能保留非零 `imageCount`。DSSI 不检查 `version/lastError`，仍无条件复制 camera matrix 并继续初始化，因此加载成功与算法可运行状态被错误等同。
+- Res1F `extern "C"` 导出层没有 `try/catch`；`threeScan_create` 的 `new`、字符串/向量分配、OpenCV 调用或 engine 内异常都可能越过 DLL/C 边界，破坏失败隔离。
+- `ReconstructEngine::shutdown()` 当前只把 `initialized=false`，没有显式等待 in-flight run、释放/归还 CUDA context/workspace 或定义幂等和线程安全；实际 CUDA buffer 主要是函数内 `thread_local`，生命周期与 loader instance 脱钩，卸载 DLL 时风险不透明。
+- `SingleFramePipeline::run()` 名义为 `const`，但整个 engine/pipeline 没有并发等级声明；shim 的 `mutable frameId_++`、内部日志和 thread-local CUDA workspace 使“同一实例串行、不同实例并行、同线程复用”三种场景都缺少明确保证。
+- pipeline 每帧都重新做输入契约检查、标定图尺寸检查和 preprocess dry-run plan；其中静态标定尺寸与固定预处理计划应在初始化编译为 immutable execution plan，帧内仅保留动态数据质量检查。
+- pipeline 输出路径同时负责核心执行、日志、ASCII PLY 写盘和 Legacy PLY 比较；性能关键执行层与诊断/工具层没有在构建目标和调用边界上分离。
+- DSSI `ScanService` 构造阶段创建一个 detach 的保存线程，并以 `[=]` 隐式捕获 `this`；析构只向队列推哨兵但不持有/join 该线程。算法输出缓冲、磁盘 I/O 和服务生命周期之间存在 use-after-free 风险窗口。
+- DSSI loader 自身用 `unique_ptr` 和逆序 `destroy/delete/FreeLibrary`，比旧 raw pointer 更合理；但 DLL 内的 destroy/delete 函数可能抛异常，而 loader 析构未 `noexcept` 隔离，仍可能在栈展开期间终止进程。
+- DSSI LocalFrame 只读取已解码的 `0.exr/1.exr/2.png/3.png` 并直接调用 SLAM `InputFrameMat`，完全绕过动态加载器和 Res1F；LocalFrame 通过只能证明 SLAM/显示消费路径，不能作为新算法下游集成证据。
+- DSSI 当前没有任何 CTest；Res1F 的 10 个测试也没有 shim ABI、DLL load/unload、DSSI buffer layout、init failure、materialized full-frame output 或跨仓库 playback contract test。
+- `algorithmBackend` 不是可靠 provider 选择：发布 ini 同时显式写死 Res1F `algorithmDll/algorithmConfig/algorithmCalib`，把 backend 单独改为 legacy 后显式路径仍覆盖 legacy default，日志会显示 legacy 但实际仍可加载 Res1F。
+- DSSI CMake 的 VS 调试 `PATH` 直接替换为 `D:/code/reconstructOneFrame/build/Release`，同时发布配置也使用 `D:/code/...` 绝对路径；构建树被当作运行时部署目录，缺少 install/package root 和依赖 manifest。
+- Res1F 的 wrapped phase、unwrap、point-cloud 三阶段接口都以 host `std::vector` 交付；实际执行在每个阶段发生 `D2H -> 下一阶段 H2D`，并使用 `cudaDeviceSynchronize()`，没有 device-resident frame graph、stream/event 或异步完成契约。
+- wrapped/unwrap 使用线程级复用 workspace，但 point-cloud 阶段每帧创建约十余个 `DeviceBuffer` 并逐个 `cudaMalloc/cudaFree`；这会带来延迟抖动和架构上限。现有 count-only benchmark 已很快，因此这里应定性为结构风险和 DSSI 完整物化路径的待量化成本，而不是未经测量地宣称当前 FPS 不达标。
+- Res1F 的 `ReconsConfig` 同时混合采集条纹计划、相位、匹配、点云、颜色、质量、AI、调试、输出和标定路径，并保留原始 JSON；配置领域边界和 schema/version/migration 仍未形成。
+- Res1F 日志依赖进程内全局裸指针 `g_activeSession`，设置/读取无同步，`LogSession::write()` 也未持锁；无法支持多 engine、插件宿主注入 sink 或可靠并发日志。DSSI 加载场景通常没有激活该 session，核心日志会静默丢失。
+- DSSI 从原始 `uint8` 相机图先旋转并复制为 `float` buffer，shim 随即逐像素再压回 `uint8`；该往返只为兼容 Legacy 签名，没有算法价值。
+- DSSI 的结构件遮挡 mask 由 `_scanHeadDisplayMirror` 决定是否启用并重映射物理裁剪边；显示配置因此改变算法输入，违反 sensor/calibration/display 三坐标域分离原则。
+- DSSI 实时路径在一个 detach 线程中串行完成采集批读取、预处理、算法、失败落盘、UI preview、质量门禁、SLAM 入队、录像和保存队列投递；没有有界队列、背压策略或阶段级超时，任一消费者抖动都会反向影响采集。
+- `_scanCapImg`、`_scanStatus`、`_imgThread` 等普通 `bool` 被 UI/控制线程与 detach worker 共同读写，生命周期依赖 sleep/flag 而非 joinable worker + stop token；这是确定的数据竞争设计风险。
+- `StartSlam()` 失败只记录日志并 `return void`，`StartScanner()` 随后仍继续启动硬件投影/采集；算法 host、SLAM 和设备控制没有统一的显式状态机与事务式启动/回滚。
+
+## 2026-07-13 架构规划收口与 07131555 性能大比拼
+
+- 当前 DSSI 差异已包含 `IReconstructionProvider`、Res1F/Legacy provider、fail-closed factory、provider contract test 和 RawCaptureReplay；计划文件阶段 87-89 落后于实际实施状态。
+- RawCaptureReplay 参数为 `backend dll config calibration source-root first last csv`，逐帧统计 `loadMs/processMs/validDepthPoints/status`，可直接覆盖指定 `SourceImg/L0..R17.bmp`。
+- 指定数据 `Upper` 数字帧为 `0..294` 共 295 帧；目录中另有非数字目录，统计时必须只接受纯数字帧名。
+- Res1F smoke `0..2` 已使用 `calibResult.json` 并成功 `3/3`；Legacy 首次 smoke 虽成功但日志命中 DSSI Release 下的 `calibParams.yml`，结果无效。
+- Legacy 的 `calibParamsPath` 来自 JSON 配置；公平运行需要独立派生配置写入 `D:/Data/Calib/2607021545_mach6/calibParams.yml` 绝对路径，不能依赖工作目录。
+- 架构文档剩余重点是：Phase 2 坐标/采集契约收口、Phase 3 steady-state device allocation 和阶段间传输、Phase 4 生命周期；Phase 5 删除 Legacy ABI 必须等待真实下游验收和回滚窗口结束，本轮不能强删。
+- Provider frame request 已显式包含 frame id、timestamp、AI/metal 和 exposure；Legacy provider 不再硬编码 non-metal，Res1F 目前仍不消费 mode。
+- Legacy 旧导出 `threeScan_init` 不接收 config；benchmark 必须用隔离工作目录 staging `config/reconsAlgPara.json`。Legacy App 日志已确认目标 YAML 和 metal=true。
+- 两轮反向顺序全量运行双方均 `295/295`，逐帧 status/点数跨轮 mismatch=0。
+- 缓存预热 v2：Res1F process p50/p90/p99=`28.7615/31.2779/35.1074ms`，Legacy=`24.4501/27.9776/32.6854ms`；Res1F wall=`26.874 FPS`，Legacy=`30.050 FPS`。
+- Res1F/Legacy metal 总点数=`17,438,437/34,823,883`，比例 `0.500761`；Legacy non-metal=`27,662,610`，说明 metal 缺失只解释部分密度差。
+- frame 197 Res1F 仅 10 点但 status=Ok；当前实现只在零点时返回 `ReconstructionInsufficient`。
+- point-cloud allocation count 在连续 frame 0/1/2 为 `13/0/0`；Phase 3 的 steady-state allocation 复用已成立，但 stage 间 host 往返仍存在。
+- 全量完成后输入根目录被外部状态移除；replay 无删除输入逻辑，现有 CSV/metadata 完整，但后续复跑需恢复数据。
+
+## 2026-07-13 Legacy `46375a0e` 差异审计
+
+- `46375a0e` 是 `32b36d0 + 27613a3` 的 merge；当前 Legacy 工作树正位于第二父 `27613a3`，因此应审查 `git diff 46375a0e^2 46375a0e`，不能把普通 `git show` 当单父补丁。
+- main 侧增量由 clear255/高亮压缩、相位匹配约束与诊断、标定缺失/空指针防护、日志开关组成；大量文档和测试资产删除不属于 Res1F 能力移植范围。
+- Res1F 已实现并默认启用：相位插值顺序门禁、LR consistency、subpixel、右相位单调穿越；其错误模型和稳定 ABI 的 init failure 隔离已强于 Legacy merge 结果。
+- Legacy 最终配置默认开启而 Res1F 尚未发现实现的是 `clear255=true`、`clear255DilateRadius=3`、`colorHighlightCompressionEnabled=true`。
+- Legacy 最终树中的 uniqueness、candidate quality filter、row-DP 和 matching diagnostic map 默认关闭；在没有当前数据使用证据前不应整包迁移。
+- Legacy `clear255` 的准确语义是：metal + 左相机时，从第一张辅助彩色帧在 rectification 双线性采样位置读取四邻点局部最大值，`>=250` 标为无效，再按半径膨胀；该 mask 与 AI mask 取交集后在 disparity matching 前拒绝像素。
+- Legacy 高光压缩只作用于 non-metal + 左相机最后三张辅助彩色帧；双线性采样后对 `>230` 的值按余弦平滑压缩到 250 上限，再进入颜色矩阵和 gamma。它不是最终纹理调色，也不作用于相位帧。
+- Res1F 的 `StripeFrameGroup::leftColor` 已按 B/G/R 保存三张辅助帧，因此无需改 capture layout；第一通道可提供 `clear255` 原始帧，三通道可在现有 `remapCorrectColorKernel` 中压缩。
+- Res1F `PointCloudCudaWorkspace` 已拥有 raw/rectified color buffer；新增 clear mask 与 dilation scratch buffer后，可以保持 warmup 后零逐帧分配，不应复刻 Legacy 每帧 `cudaMalloc` 和 mask D2H/H2D。
+- 当前 ABI 1.1 的 `RofFrameInputV1` 为 136 bytes，尾部追加 flags 可形成 ABI 1.2；插件必须按 `struct_size` 只读取存在字段，并接受旧 136-byte 前缀，不能继续用新 `sizeof` 拒绝旧 caller。
+- DSSI `ProviderFrameRequest` 已有 `aiScan/metalScan`，但 `RofPluginProvider` 尚未填写 ABI input flags；Legacy provider 已真实转发 mode。新增 capability 后，metal 可由 Res1F 消费，AI 在没有实现时必须明确拒绝而非静默忽略。
+
+## 2026-07-13 07131838 最终验证发现
+
+- GitLab fetch 后 `origin/main` 仍为 `46375a0e`；最新 Legacy 使用独立 main worktree 新鲜构建，不使用 feature 分支 DLL。
+- Res1F ABI 1.2 metal flags、GPU clear mask、高光压缩和 DSSI 转发已完成；旧 136-byte frame input 前缀测试通过。
+- 479 帧双方调用和质量 sentinel 都是 `479/479`；Res1F 最终两轮逐帧点数/质量/reason 完全确定，Legacy 有 1 帧 2 点差异。
+- `clear255` 删除点数 Res1F/Legacy 为 `779767/852609`，绝对影响接近；关闭后点数比仍仅 `0.486573`。
+- 最终 reason 语义中 saturation 出现帧数为 `12/11`，但 LocalDiscontinuity 为 `441/255`，反映点云碎片化差异。
+- Res1F/Legacy 总点数比 `0.479392`，质量均值 `0.501021/0.886948`，质量相关 `0.578322`；不能宣称质量结果已追平。
+- 最终 Release process p50/p90/p99 为 Res1F `37.013/46.209/51.947ms`，Legacy `29.319/33.892/39.886ms`；完整质量路径仍慢。
+
+## 2026-07-13 Res1F JSON-only 标定输入审计
+
+- `CalibrationModel.cpp` 当前仍按内容首尾判断：JSON object 走 JSON reader，其他内容回退到手写 OpenCV YAML parser；这与最新 JSON-only 约束冲突。
+- `config/reconsAlgPara.json` 仍保留未被 Res1F `ReconsConfig` 消费的旧 `calibParamsPath=calibParams.yml`，而生产代码实际只读取 `calibResultPath`。
+- 源码树没有 Res1F `.yml/.yaml` 标定样例；仓库中只有 Legacy build 的 CMake YAML 和 Res1F build 自动生成的 `CMakeConfigureLog.yaml`。
+- benchmark 脚本中的 `calibParams.yml` 均只写入 Legacy 隔离配置；删除这些引用会破坏用户要求的最新 Legacy 公平对比，必须保留。
+
+## 2026-07-13 07131838 重大缺陷复核
+
+- 后台 SLAM 只使耗时排名失去正式基线意义；479 帧点数/质量跨反向轮次确定，仍可用于结果缺陷定位。
+- Res1F/Legacy 点数比中位数仅 `0.4385`；32 帧低于 `0.1`，111 帧低于 `0.25`，不是固定比例差。
+- 困难帧退化主要发生在连续性过滤：frame 26 `raw 82641 -> filtered 2655`，frame 311 `59314 -> 23`；正常 frame 2 为 `134959 -> 107020`。
+- 关闭过滤会把 frame 26/311 恢复到 `82641/59314`，但 boundary ratio 为 `0.7747/0.8932`，属于碎片 raw 点，不能作为修复。
+- 开启 Legacy Z-only smoothing 后 frame 2/26 为 `76795/1371`，均比 filter-only 更差，再次否定该生产开关。
+- JSON 和 YAML 的 K/D/R/T/R_L/R_R/P_L/P_R/Q 逐元素完全一致，排除标定文件格式差异。
+- Res1F 当前在 raw 强度上计算 wrapped/absolute phase，最后才 remap absolute phase；Legacy 在每张强度图 remap 后计算相位。该非线性顺序不等价。
+- OpenCV 预 rectified BMP + 无二次 phase remap 的诊断实验：frame 2/26/311 filteredValid 从 `107020/2655/23` 提升到 `122458/47713/6205`，确认 rectification 时序是重大根因。

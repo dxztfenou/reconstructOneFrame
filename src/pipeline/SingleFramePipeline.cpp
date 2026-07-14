@@ -94,6 +94,7 @@ Status SingleFramePipeline::initialize(ReconsConfig config,
                                        CalibrationModel calibration,
                                        PipelineOptions options)
 {
+    shutdown();
     config_ = std::move(config);
     calibration_ = std::move(calibration);
     options_ = options;
@@ -157,7 +158,8 @@ FrameResult SingleFramePipeline::run(const StripeFrameGroup& frame) const
     stageStart = std::chrono::steady_clock::now();
     WrappedPhaseOptions wrappedPhaseOptions;
     wrappedPhaseOptions.materializeModulation = false;
-    WrappedPhaseResult wrappedPhase = computeWrappedPhaseCuda(frame, config_, wrappedPhaseOptions);
+    WrappedPhaseResult wrappedPhase = computeWrappedPhaseCuda(
+        frame, config_, calibration_, wrappedPhaseWorkspace_, wrappedPhaseOptions);
     wrappedPhase.stats.elapsedMs = elapsedMsSince(stageStart);
     result.stats.push_back(wrappedPhase.stats);
     if (!wrappedPhase.status.ok()) {
@@ -168,7 +170,8 @@ FrameResult SingleFramePipeline::run(const StripeFrameGroup& frame) const
     result.wrappedPhaseComputed = true;
 
     stageStart = std::chrono::steady_clock::now();
-    UnwrappedPhaseResult unwrappedPhase = computeUnwrappedPhaseCuda(wrappedPhase, config_);
+    UnwrappedPhaseResult unwrappedPhase = computeUnwrappedPhaseCuda(
+        wrappedPhase, config_, phaseUnwrapWorkspace_);
     unwrappedPhase.stats.elapsedMs = elapsedMsSince(stageStart);
     result.stats.push_back(unwrappedPhase.stats);
     if (!unwrappedPhase.status.ok()) {
@@ -199,7 +202,8 @@ FrameResult SingleFramePipeline::run(const StripeFrameGroup& frame) const
     pointCloudOutputOptions.materializeQualityGrid =
         options_.materializeFrameOutputs || config_.qualityInfoEnabled;
     PointCloudReconstructionResult pointCloud =
-        reconstructPointCloudCuda(unwrappedPhase, calibration_, config_, frame, pointCloudOutputOptions);
+        reconstructPointCloudCuda(
+            unwrappedPhase, calibration_, config_, frame, pointCloudWorkspace_, pointCloudOutputOptions);
     pointCloud.stats.elapsedMs = elapsedMsSince(stageStart);
     result.stats.push_back(pointCloud.stats);
     result.matchingSummary = pointCloud.matchingSummary;
@@ -292,6 +296,14 @@ FrameResult SingleFramePipeline::run(const StripeFrameGroup& frame) const
             ", " + result.pointCloudSummary +
             ", qualityComputed=" + std::string(result.qualityComputed ? "true" : "false"));
     return result;
+}
+
+void SingleFramePipeline::shutdown() noexcept
+{
+    initialized_ = false;
+    wrappedPhaseWorkspace_.reset();
+    phaseUnwrapWorkspace_.reset();
+    pointCloudWorkspace_.reset();
 }
 
 } // namespace reconstruct_one_frame

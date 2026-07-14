@@ -55,6 +55,10 @@ int main()
     require(config.colorTextureProjectorIndices == std::vector<int>({16, 17, 18}), "expected BGR auxiliary projector indices");
     require(config.colorCorrectionMatrix.size() == 12, "expected 3x4 color correction matrix");
     require(config.colorGamma == 0.5, "expected legacy-compatible color gamma");
+    require(config.clear255, "expected production clear255 enabled");
+    require(config.clear255DilateRadius == 3, "expected production clear255 radius");
+    require(config.colorHighlightCompressionEnabled,
+            "expected production non-metal highlight compression enabled");
 
     const auto legacyCompatiblePath = std::filesystem::temp_directory_path() / "rof_legacy_compatible_config.json";
     {
@@ -72,6 +76,10 @@ int main()
     require(!legacyCompatible.pointCloudSmoothingEnabled, "expected missing smoothing key to remain disabled");
     require(!legacyCompatible.pointCloudFilterEnabled, "expected missing point-cloud filter key to remain disabled");
     require(!legacyCompatible.colorTextureEnabled, "expected missing color texture key to remain disabled");
+    require(!legacyCompatible.clear255, "expected missing clear255 key to remain disabled");
+    require(legacyCompatible.clear255DilateRadius == 3, "expected compatible clear255 radius default");
+    require(!legacyCompatible.colorHighlightCompressionEnabled,
+            "expected missing highlight compression key to remain disabled");
 
     const auto invalidColorPath = std::filesystem::temp_directory_path() / "rof_invalid_color_config.json";
     {
@@ -82,6 +90,18 @@ int main()
     status = loadReconsConfig(invalidColorPath.string(), invalidColor);
     std::filesystem::remove(invalidColorPath);
     require(status.code == StatusCode::ConfigInvalidValue, "expected invalid color projector indices to fail");
+
+    const auto invalidClearRadiusPath =
+        std::filesystem::temp_directory_path() / "rof_invalid_clear255_radius_config.json";
+    {
+        std::ofstream out(invalidClearRadiusPath);
+        out << R"({"clear255DilateRadius":33})";
+    }
+    ReconsConfig invalidClearRadius;
+    status = loadReconsConfig(invalidClearRadiusPath.string(), invalidClearRadius);
+    std::filesystem::remove(invalidClearRadiusPath);
+    require(status.code == StatusCode::ConfigInvalidValue,
+            "expected excessive clear255 dilation radius to fail");
 
     ReconsConfig missing;
     status = loadReconsConfig("config/does_not_exist.json", missing);

@@ -5,7 +5,7 @@
   ],
   "square_size": 2.0,
   "board_type": 2,
-  "calibParamsPath": "calibParams.yml",
+  "calibResultPath": "calibResult.json",
   "calibParamsSwapLRSemantics": false,
   "image_size": [
     424,
@@ -89,6 +89,9 @@
     -0.077533, 0.0993569, 1.39308, 28.8695
   ],
   "colorGamma": 0.5,
+  "clear255": true,
+  "clear255DilateRadius": 3,
+  "colorHighlightCompressionEnabled": true,
   "debugMapOutputEnabled": false,
   "rectificationContractCheckEnabled": false,
   "rectificationContractPointsCsv": "",

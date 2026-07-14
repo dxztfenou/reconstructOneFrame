@@ -195,7 +195,7 @@ struct StageResult {
 
 - 默认算法 JSON：`config/reconsAlgPara.json`，第一阶段直接搬用 `D:\code\teethscanalgorithm3x4\config\reconsAlgPara.json` 的文件名和主要字段。
 - 用户算法 JSON 文件、JSON 字符串或内存 JSON 对象。
-- 标定结果 JSON：来自 `D:\code\manufacturing-process-monitoring-system` 的 `calibResult.json`。`calibParams.yml` 只作为 Legacy 兼容导出，不作为本项目新接口首选。
+- 标定结果 JSON：来自 `D:\code\manufacturing-process-monitoring-system` 的 `calibResult.json`。Res1F 不接受 `.yml/.yaml` 路径或 YAML 内容；`calibParams.yml` 只供外部 Legacy 实现读取。
 - 可选环境变量覆盖：只允许 runtime/logging/diagnostics 类开关，避免热路径算法参数被不可追踪地改写
 
 输出：

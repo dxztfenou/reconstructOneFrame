@@ -332,10 +332,21 @@ PointReliabilityResult evaluatePointReliability(const PointCloudReconstructionRe
             unsigned int reason = ReasonNone;
             double quality = 1.0;
             const PointCloudGridPoint& point = pointCloud.gridPoints[index];
+            if (pointCloud.semanticMaskApplied && !point.semanticBackground) {
+                pixel.semanticClass = 1.0;
+            }
 
+            if (point.semanticBackground) {
+                reason |= ReasonSemanticBackground;
+                quality = 0.0;
+            }
             if (!validPoint(point, config)) {
                 reason |= ReasonDepthRange;
                 quality = 0.0;
+            }
+            if (config.qualityInfoUseModulation && point.highFrequencySaturated) {
+                reason |= ReasonSaturation;
+                quality = std::min(quality, 0.5);
             }
 
             if (config.qualityInfoUseMatchCost && std::isfinite(point.matchCost)) {
@@ -352,10 +363,12 @@ PointReliabilityResult evaluatePointReliability(const PointCloudReconstructionRe
                 quality = std::min(quality, 0.6);
             }
 
-            if (config.qualityInfoUseModulation && std::isfinite(point.modulation)) {
-                if (point.modulation < static_cast<float>(config.qualityInfoMinModulation)) {
+            if (config.qualityInfoUseModulation) {
+                if (point.highFrequencyLowLight || !std::isfinite(point.modulation) ||
+                    point.modulation < static_cast<float>(config.qualityInfoMinModulation)) {
                     reason |= ReasonLowModulation;
-                    const double modulationQuality = config.qualityInfoMinModulation > 0.0
+                    const double modulationQuality =
+                        std::isfinite(point.modulation) && config.qualityInfoMinModulation > 0.0
                         ? clamp01(static_cast<double>(point.modulation) / config.qualityInfoMinModulation)
                         : 0.0;
                     quality = std::min(quality, std::max(0.05, modulationQuality));
@@ -375,7 +388,7 @@ PointReliabilityResult evaluatePointReliability(const PointCloudReconstructionRe
             }
 
             pixel.score = clamp01(quality);
-            pixel.reason = reason;
+            pixel.reason = config.qualityInfoReasonChannelEnabled ? reason : ReasonNone;
             result.map.pixels[index] = pixel;
         }
     }

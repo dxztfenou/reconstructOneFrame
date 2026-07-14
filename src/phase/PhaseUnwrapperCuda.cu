@@ -238,7 +238,8 @@ void summarizePhase(UnwrappedPhaseCameraResult& output)
 Status computeOneCameraCuda(const WrappedPhaseResult& wrappedPhase,
                             const ReconsConfig& config,
                             CameraSide camera,
-                            UnwrappedPhaseCameraResult& output)
+                            UnwrappedPhaseCameraResult& output,
+                            PhaseUnwrapWorkspace& workspace)
 {
     const WrappedPhaseFrequencyResult* phi0 = nullptr;
     const WrappedPhaseFrequencyResult* phi1 = nullptr;
@@ -261,7 +262,6 @@ Status computeOneCameraCuda(const WrappedPhaseResult& wrappedPhase,
     output.height = height;
     output.absolutePhase.assign(static_cast<std::size_t>(pixelCount), std::numeric_limits<float>::quiet_NaN());
 
-    thread_local PhaseUnwrapWorkspace workspace;
     DeviceBuffer& dPhi0 = workspace.phi0;
     DeviceBuffer& dPhi1 = workspace.phi1;
     DeviceBuffer& dPhi2 = workspace.phi2;
@@ -388,13 +388,37 @@ Status computeOneCameraCuda(const WrappedPhaseResult& wrappedPhase,
 
 } // namespace
 
+struct PhaseUnwrapCudaWorkspace::Impl {
+    PhaseUnwrapWorkspace workspace;
+};
+
+PhaseUnwrapCudaWorkspace::PhaseUnwrapCudaWorkspace()
+    : impl_(std::make_unique<Impl>())
+{
+}
+
+PhaseUnwrapCudaWorkspace::~PhaseUnwrapCudaWorkspace() = default;
+PhaseUnwrapCudaWorkspace::PhaseUnwrapCudaWorkspace(PhaseUnwrapCudaWorkspace&&) noexcept = default;
+PhaseUnwrapCudaWorkspace& PhaseUnwrapCudaWorkspace::operator=(PhaseUnwrapCudaWorkspace&&) noexcept = default;
+
+void PhaseUnwrapCudaWorkspace::reset() noexcept
+{
+    impl_.reset();
+}
+
 UnwrappedPhaseResult computeUnwrappedPhaseCuda(const WrappedPhaseResult& wrappedPhase,
                                                const ReconsConfig& config,
+                                               PhaseUnwrapCudaWorkspace& workspaceHandle,
                                                const PhaseUnwrapOptions&)
 {
+    if (!workspaceHandle.impl_) {
+        workspaceHandle.impl_ = std::make_unique<PhaseUnwrapCudaWorkspace::Impl>();
+    }
+    PhaseUnwrapWorkspace& workspace = workspaceHandle.impl_->workspace;
     UnwrappedPhaseResult result;
     result.stats.stageName = "phase_unwrap_cuda";
     result.stats.inputImageCount = wrappedPhase.stats.validImageCount;
+    result.coordinateDomain = wrappedPhase.coordinateDomain;
 
     if (!wrappedPhase.status.ok()) {
         result.status = wrappedPhase.status;
@@ -415,13 +439,15 @@ UnwrappedPhaseResult computeUnwrappedPhaseCuda(const WrappedPhaseResult& wrapped
         return result;
     }
 
-    Status status = computeOneCameraCuda(wrappedPhase, config, CameraSide::Left, result.left);
+    Status status = computeOneCameraCuda(
+        wrappedPhase, config, CameraSide::Left, result.left, workspace);
     if (!status.ok()) {
         result.status = status;
         result.stats.status = status;
         return result;
     }
-    status = computeOneCameraCuda(wrappedPhase, config, CameraSide::Right, result.right);
+    status = computeOneCameraCuda(
+        wrappedPhase, config, CameraSide::Right, result.right, workspace);
     if (!status.ok()) {
         result.status = status;
         result.stats.status = status;
@@ -436,6 +462,14 @@ UnwrappedPhaseResult computeUnwrappedPhaseCuda(const WrappedPhaseResult& wrapped
     result.status = {};
     result.stats.status = {};
     return result;
+}
+
+UnwrappedPhaseResult computeUnwrappedPhaseCuda(const WrappedPhaseResult& wrappedPhase,
+                                               const ReconsConfig& config,
+                                               const PhaseUnwrapOptions& options)
+{
+    PhaseUnwrapCudaWorkspace workspace;
+    return computeUnwrappedPhaseCuda(wrappedPhase, config, workspace, options);
 }
 
 } // namespace reconstruct_one_frame

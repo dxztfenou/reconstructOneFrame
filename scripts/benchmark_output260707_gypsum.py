@@ -208,7 +208,7 @@ def main() -> int:
     parser.add_argument("--root", type=Path, default=Path(r"D:\Data\output260707_gypsum\Upper"))
     parser.add_argument("--exe", type=Path, default=Path(r"build\Release\reconstructSample.exe"))
     parser.add_argument("--config", type=Path, default=Path(r"D:\Data\Calib\2607011016_mach6\singleStripe\output\run_config.json"))
-    parser.add_argument("--calib", type=Path, default=Path(r"D:\Data\Calib\2607011016_mach6\calibParams.yml"))
+    parser.add_argument("--calib", type=Path, default=Path(r"D:\Data\Calib\2607011016_mach6\calibResult.json"))
     parser.add_argument("--frames", default="100,200,300,400", help="Comma list or inclusive ranges such as 0:465. Empty means all numeric frame dirs.")
     parser.add_argument("--output", type=Path, default=Path(r"build\big_battle_output260707_gypsum"))
     parser.add_argument("--write-ply", action="store_true", help="Also write depth_points.ply per frame. Disabled by default for timing.")

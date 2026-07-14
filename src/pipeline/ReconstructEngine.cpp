@@ -4,6 +4,7 @@
 #include "config/ReconsConfig.h"
 #include "pipeline/SingleFramePipeline.h"
 
+#include <algorithm>
 #include <memory>
 
 namespace reconstruct_one_frame {
@@ -60,6 +61,61 @@ Status ReconstructEngine::init(const InitOptions& options)
     return status;
 }
 
+Status ReconstructEngine::describe(EngineDescriptor& descriptor) const
+{
+    if (!impl_->initialized) {
+        return {StatusCode::InternalError, "ReconstructEngine", "engine is not initialized"};
+    }
+
+    EngineDescriptor value;
+    value.imageWidth = impl_->config.imageWidth;
+    value.imageHeight = impl_->config.imageHeight;
+
+    int maxProjectorIndex = 0;
+    value.stripeRequirements.reserve(impl_->config.stripeRequirements.size());
+    for (const StripeRequirement& requirement : impl_->config.stripeRequirements) {
+        value.stripeRequirements.push_back({
+            requirement.frequencyIndex,
+            requirement.frequencyValue,
+            requirement.requiredPhaseSteps,
+            requirement.firstProjectorIndex,
+            requirement.phaseStepDirection
+        });
+        maxProjectorIndex = std::max(
+            maxProjectorIndex,
+            requirement.firstProjectorIndex + requirement.requiredPhaseSteps - 1);
+    }
+
+    if (impl_->config.colorTextureEnabled || impl_->config.clear255) {
+        value.colorProjectorIndices = impl_->config.colorTextureProjectorIndices;
+        for (int projectorIndex : value.colorProjectorIndices) {
+            maxProjectorIndex = std::max(maxProjectorIndex, projectorIndex);
+        }
+    }
+    value.liveImageCount = static_cast<std::uint32_t>(std::max(maxProjectorIndex, 0));
+
+    if (impl_->calibration.qMatrix.size() == value.cameraModelValues.size()) {
+        value.cameraModelRows = 4;
+        value.cameraModelCols = 4;
+        std::copy(impl_->calibration.qMatrix.begin(),
+                  impl_->calibration.qMatrix.end(),
+                  value.cameraModelValues.begin());
+    } else if (impl_->calibration.leftIntrinsics.size() == 9U) {
+        value.cameraModelRows = 3;
+        value.cameraModelCols = 3;
+        std::copy(impl_->calibration.leftIntrinsics.begin(),
+                  impl_->calibration.leftIntrinsics.end(),
+                  value.cameraModelValues.begin());
+    } else {
+        return {StatusCode::CalibrationInvalid,
+                "ReconstructEngine",
+                "calibration does not contain Q or left intrinsics"};
+    }
+
+    descriptor = std::move(value);
+    return {};
+}
+
 FrameResult ReconstructEngine::run(const StripeFrameGroup& frame)
 {
     FrameResult result;
@@ -72,6 +128,7 @@ FrameResult ReconstructEngine::run(const StripeFrameGroup& frame)
 
 void ReconstructEngine::shutdown()
 {
+    impl_->pipeline.shutdown();
     impl_->initialized = false;
 }
 

@@ -1,14 +1,11 @@
-#include "reconstruct_one_frame/reconstructInterface.h"
-
-#include "calibration_model/CalibrationModel.h"
-#include "config/ReconsConfig.h"
+#include "reconstruct_one_frame/rof_c_api.h"
 
 #include <opencv2/opencv.hpp>
 
 #include <algorithm>
-#include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -19,18 +16,6 @@ class threeScan;
 }
 
 namespace {
-
-using reconstruct_one_frame::CameraSide;
-using reconstruct_one_frame::FrameResult;
-using reconstruct_one_frame::ImageElementType;
-using reconstruct_one_frame::ImageView;
-using reconstruct_one_frame::InitOptions;
-using reconstruct_one_frame::ReconsConfig;
-using reconstruct_one_frame::ReconstructEngine;
-using reconstruct_one_frame::Status;
-using reconstruct_one_frame::StripeFrameGroup;
-using reconstruct_one_frame::StripeImage;
-using reconstruct_one_frame::StripeRequirement;
 
 constexpr const char* kDefaultConfigPath = "D:/code/reconstructOneFrame/config/reconsAlgPara.json";
 constexpr const char* kDefaultCalibrationPath = "D:/Data/Calib/2607011016_mach6/calibResult.json";
@@ -55,48 +40,31 @@ std::string getenvString(const char* key)
 std::string resolvePath(const char* environmentKey, const char* fallback)
 {
     std::string value = getenvString(environmentKey);
-    if (!value.empty()) {
-        return value;
-    }
-    return fallback;
+    return value.empty() ? std::string(fallback) : value;
 }
 
-std::uint8_t floatToByte(float value)
+RofStatusV1 makeStatus()
 {
-    if (!std::isfinite(value)) {
-        return 0U;
-    }
-    const float clamped = std::clamp(value, 0.0F, 255.0F);
-    return static_cast<std::uint8_t>(std::lround(clamped));
+    RofStatusV1 status {};
+    status.struct_size = sizeof(status);
+    return status;
 }
 
-std::uint32_t requiredLiveImageCount(const ReconsConfig& config)
+RofMutableImageViewV1 makeOutputView(cv::Mat& image,
+                                     std::uint32_t elementType,
+                                     std::uint32_t coordinateSpace)
 {
-    int maxProjectorIndex = 0;
-    for (const StripeRequirement& requirement : config.stripeRequirements) {
-        maxProjectorIndex = std::max(maxProjectorIndex,
-                                     requirement.firstProjectorIndex + requirement.requiredPhaseSteps - 1);
-    }
-    if (config.colorTextureEnabled) {
-        for (int projectorIndex : config.colorTextureProjectorIndices) {
-            maxProjectorIndex = std::max(maxProjectorIndex, projectorIndex);
-        }
-    }
-    return static_cast<std::uint32_t>(std::max(maxProjectorIndex, 0));
-}
-
-cv::Mat matrixFromRowMajor(const std::vector<double>& values, int rows, int cols)
-{
-    if (values.size() != static_cast<std::size_t>(rows * cols)) {
-        return {};
-    }
-    cv::Mat mat(rows, cols, CV_64FC1);
-    for (int row = 0; row < rows; ++row) {
-        for (int col = 0; col < cols; ++col) {
-            mat.at<double>(row, col) = values[static_cast<std::size_t>(row * cols + col)];
-        }
-    }
-    return mat;
+    RofMutableImageViewV1 view {};
+    view.struct_size = sizeof(view);
+    view.data = image.data;
+    view.capacity_bytes = image.step[0] * static_cast<std::size_t>(image.rows);
+    view.row_stride_bytes = static_cast<std::uint32_t>(image.step[0]);
+    view.width = static_cast<std::uint32_t>(image.cols);
+    view.height = static_cast<std::uint32_t>(image.rows);
+    view.channels = static_cast<std::uint32_t>(image.channels());
+    view.element_type = elementType;
+    view.coordinate_space = coordinateSpace;
+    return view;
 }
 
 } // namespace
@@ -106,60 +74,91 @@ namespace StructureLight {
 class threeScan {
 public:
     threeScan() = default;
+    ~threeScan() noexcept
+    {
+        destroy();
+    }
+
+    threeScan(const threeScan&) = delete;
+    threeScan& operator=(const threeScan&) = delete;
 
     void init(cv::Mat& cameraMatrix, std::string& version, unsigned int& imageCount)
     {
+        destroy();
+        lastError_.clear();
+        lastSummary_.clear();
+        version = "reconstructOneFrame init failed";
+        imageCount = 0U;
+
+        api_ = {};
+        api_.struct_size = sizeof(api_);
+        const int apiResult = rof_get_api(
+            ROF_ABI_MAJOR_V1, ROF_ABI_MINOR_V1, sizeof(api_), &api_);
+        if (apiResult != ROF_STATUS_OK_V1) {
+            setFailure("rof_get_api failed: " + std::to_string(apiResult));
+            return;
+        }
+
         configPath_ = resolvePath("ROF_CONFIG_PATH", kDefaultConfigPath);
         calibrationPath_ = resolvePath("ROF_CALIB_PATH", kDefaultCalibrationPath);
+        RofSessionConfigV1 config {};
+        config.struct_size = sizeof(config);
+        config.config_path = configPath_.data();
+        config.config_path_size = configPath_.size();
+        config.calibration_path = calibrationPath_.data();
+        config.calibration_path_size = calibrationPath_.size();
+        config.output_mask = ROF_OUTPUT_ALL_V1;
 
-        Status status = reconstruct_one_frame::loadReconsConfig(configPath_, config_);
-        if (!status.ok()) {
-            initialized_ = false;
-            lastError_ = "loadReconsConfig failed: " + status.message;
-            version = "reconstructOneFrame init failed";
-            imageCount = 0U;
+        RofStatusV1 status = makeStatus();
+        const int createResult = api_.create_session(&config, &session_, &status);
+        if (createResult != ROF_STATUS_OK_V1 || session_ == nullptr) {
+            setFailure("create_session failed: " + readApiError(nullptr));
             return;
         }
 
-        imageCount_ = requiredLiveImageCount(config_);
-        imageCount = imageCount_;
-
-        status = reconstruct_one_frame::loadCalibrationResultJson(calibrationPath_, calibration_);
-        if (!status.ok()) {
-            initialized_ = false;
-            lastError_ = "loadCalibrationResultJson failed: " + status.message;
-            version = "reconstructOneFrame init failed";
+        plan_ = {};
+        plan_.struct_size = sizeof(plan_);
+        status = makeStatus();
+        if (api_.get_capture_plan(session_, &plan_, &status) != ROF_STATUS_OK_V1) {
+            setFailure("get_capture_plan failed: " + readApiError(session_));
+            destroy();
             return;
         }
 
-        cv::Mat qMatrix = matrixFromRowMajor(calibration_.qMatrix, 4, 4);
-        if (!qMatrix.empty()) {
-            cameraMatrix = qMatrix;
-        } else {
-            cv::Mat leftK = matrixFromRowMajor(calibration_.leftIntrinsics, 3, 3);
-            cameraMatrix = leftK.empty() ? cv::Mat::eye(3, 3, CV_64FC1) : leftK;
-        }
-
-        InitOptions options;
-        options.configPath = configPath_;
-        options.calibrationPath = calibrationPath_;
-        options.materializeFrameOutputs = true;
-        options.writePly = false;
-        status = engine_.init(options);
-        if (!status.ok()) {
-            initialized_ = false;
-            lastError_ = "ReconstructEngine init failed: " + status.message;
-            version = "reconstructOneFrame init failed";
+        camera_ = {};
+        camera_.struct_size = sizeof(camera_);
+        status = makeStatus();
+        if (api_.get_camera_model(session_, &camera_, &status) != ROF_STATUS_OK_V1 ||
+            camera_.rows == 0U || camera_.cols == 0U || camera_.rows * camera_.cols > 16U) {
+            setFailure("get_camera_model failed: " + readApiError(session_));
+            destroy();
             return;
         }
 
-        initialized_ = true;
+        cameraMatrix.create(static_cast<int>(camera_.rows),
+                            static_cast<int>(camera_.cols),
+                            CV_64FC1);
+        for (std::uint32_t row = 0; row < camera_.rows; ++row) {
+            for (std::uint32_t col = 0; col < camera_.cols; ++col) {
+                cameraMatrix.at<double>(static_cast<int>(row), static_cast<int>(col)) =
+                    camera_.values[static_cast<std::size_t>(row) * camera_.cols + col];
+            }
+        }
+
+        imageCount = plan_.live_image_count;
+        initialized_ = imageCount != 0U;
+        if (!initialized_) {
+            setFailure("capture plan returned zero live images");
+            destroy();
+            return;
+        }
+        version = std::string(api_.plugin_id) + " ABI " +
+            std::to_string(api_.abi_major) + "." + std::to_string(api_.abi_minor);
         lastError_.clear();
-        version = "reconstructOneFrame DSSI compat";
     }
 
-    int startScan(bool /*isAiScan*/,
-                  bool /*isMetalScan*/,
+    int startScan(bool isAiScan,
+                  bool isMetalScan,
                   const float* leftImages,
                   const float* rightImages,
                   int& /*exposure*/,
@@ -169,71 +168,81 @@ public:
                   cv::Mat& qualityInfo,
                   const std::string& /*basePath*/)
     {
-        if (!initialized_ || leftImages == nullptr || rightImages == nullptr) {
-            lastError_ = "engine is not initialized or live image buffers are null";
-            lastSummary_ = lastError_;
+        if (!initialized_ || session_ == nullptr || leftImages == nullptr || rightImages == nullptr) {
+            setFailure("stable ABI session is not initialized or input buffers are null");
             return -1;
         }
 
-        LiveFrameBuffers buffers;
-        Status status = buildFrame(leftImages, rightImages, buffers);
-        if (!status.ok()) {
-            lastError_ = status.message;
-            lastSummary_ = "frameId=" + std::to_string(frameId_) + ", buildFrame failed: " + lastError_;
+        const int width = static_cast<int>(plan_.input_width);
+        const int height = static_cast<int>(plan_.input_height);
+        const std::size_t rowBytes = static_cast<std::size_t>(width) * sizeof(float);
+        const std::size_t imageBytes = rowBytes * static_cast<std::size_t>(height);
+        const std::size_t stackBytes = imageBytes * static_cast<std::size_t>(plan_.live_image_count);
+
+        RofFrameInputV1 input {};
+        input.struct_size = sizeof(input);
+        input.frame_id = frameId_++;
+        input.flags = (isAiScan ? ROF_FRAME_FLAG_AI_SCAN_V1 : 0U) |
+            (isMetalScan ? ROF_FRAME_FLAG_METAL_SCAN_V1 : 0U);
+        input.left = makeInputStack(leftImages, stackBytes, rowBytes, imageBytes);
+        input.right = makeInputStack(rightImages, stackBytes, rowBytes, imageBytes);
+
+        depthImage.create(static_cast<int>(plan_.output_height),
+                          static_cast<int>(plan_.output_width),
+                          CV_32FC3);
+        normalImage.create(static_cast<int>(plan_.output_height),
+                           static_cast<int>(plan_.output_width),
+                           CV_32FC3);
+        colorImage.create(static_cast<int>(plan_.output_height),
+                          static_cast<int>(plan_.output_width),
+                          CV_8UC3);
+        qualityInfo.create(static_cast<int>(plan_.output_height),
+                           static_cast<int>(plan_.output_width),
+                           CV_16UC3);
+
+        RofFrameOutputV1 output {};
+        output.struct_size = sizeof(output);
+        output.output_mask = ROF_OUTPUT_ALL_V1;
+        output.depth = makeOutputView(
+            depthImage, ROF_ELEMENT_FLOAT32_V1, ROF_COORDINATE_LEFT_CAMERA_MM_V1);
+        output.normal = makeOutputView(
+            normalImage, ROF_ELEMENT_FLOAT32_V1, ROF_COORDINATE_LEFT_CAMERA_MM_V1);
+        output.color = makeOutputView(
+            colorImage, ROF_ELEMENT_UINT8_V1, ROF_COORDINATE_RECTIFIED_LEFT_IMAGE_V1);
+        output.quality = makeOutputView(
+            qualityInfo, ROF_ELEMENT_UINT16_V1, ROF_COORDINATE_RECTIFIED_LEFT_IMAGE_V1);
+
+        RofFrameMetricsV1 metrics {};
+        metrics.struct_size = sizeof(metrics);
+        RofStatusV1 status = makeStatus();
+        const int processResult = api_.process_frame(
+            session_, &input, &output, &metrics, &status);
+        if (processResult != ROF_STATUS_OK_V1) {
+            depthImage.release();
+            normalImage.release();
+            colorImage.release();
+            qualityInfo.release();
+            setFailure(readApiError(session_));
+            lastSummary_ = "frameId=" + std::to_string(input.frame_id) +
+                ", status=" + std::to_string(processResult);
             return -1;
         }
 
-        FrameResult result = engine_.run(buffers.frame);
-        std::ostringstream summary;
-        summary << "frameId=" << buffers.frame.frameId
-                << ", status=" << static_cast<int>(result.status.code)
-                << ", vertices=" << result.pointCloudVertexCount;
-        if (!result.matchingSummary.empty()) {
-            summary << ", " << result.matchingSummary;
-        }
-        if (!result.pointCloudSummary.empty()) {
-            summary << ", " << result.pointCloudSummary;
-        }
-        lastSummary_ = summary.str();
-        if (!result.status.ok()) {
-            lastError_ = result.status.module + ": " + result.status.message;
-            return -1;
-        }
-
-        const std::size_t expectedValues = static_cast<std::size_t>(result.outputWidth) *
-            static_cast<std::size_t>(result.outputHeight) * 3U;
-        if (result.outputWidth <= 0 || result.outputHeight <= 0 ||
-            result.depthXyz.size() != expectedValues ||
-            result.normalXyz.size() != expectedValues ||
-            result.colorBgr.size() != expectedValues) {
-            lastError_ = "materialized frame outputs are incomplete";
-            lastSummary_ += ", " + lastError_;
-            return -1;
-        }
-
-        depthImage = cv::Mat(result.outputHeight,
-                             result.outputWidth,
-                             CV_32FC3,
-                             const_cast<float*>(result.depthXyz.data())).clone();
-        normalImage = cv::Mat(result.outputHeight,
-                              result.outputWidth,
-                              CV_32FC3,
-                              const_cast<float*>(result.normalXyz.data())).clone();
-        colorImage = cv::Mat(result.outputHeight,
-                             result.outputWidth,
-                             CV_8UC3,
-                             const_cast<std::uint8_t*>(result.colorBgr.data())).clone();
-        if (!result.qualityInfoU16.empty()) {
-            qualityInfo = cv::Mat(result.outputHeight,
-                                  result.outputWidth,
-                                  CV_16UC3,
-                                  const_cast<std::uint16_t*>(result.qualityInfoU16.data())).clone();
-        } else {
+        if (output.quality.written_bytes == 0U) {
             qualityInfo.release();
         }
-
+        std::ostringstream summary;
+        summary << "frameId=" << metrics.frame_id
+                << ", status=" << metrics.status_code
+                << ", vertices=" << metrics.point_count
+                << ", elapsedMs=" << metrics.elapsed_ms;
+        lastSummary_ = summary.str();
         lastError_.clear();
         return 0;
+    }
+
+    void prepareData(const std::vector<std::string>& /*paths*/, float* /*data*/) noexcept
+    {
     }
 
     const char* lastError() const noexcept
@@ -246,227 +255,194 @@ public:
         return lastSummary_.c_str();
     }
 
-    void destroy()
+    void setFailure(std::string message) noexcept
     {
-        engine_.shutdown();
+        try {
+            lastError_ = std::move(message);
+        } catch (...) {
+        }
         initialized_ = false;
     }
 
-    void prepareData(const std::vector<std::string>& /*paths*/, float* /*data*/)
+    void destroy() noexcept
     {
-        // DSSI live scan passes camera buffers directly to startScan(). The
-        // Legacy file-loading helper remains exported only for ABI compatibility.
+        try {
+            if (session_ != nullptr && api_.drain != nullptr) {
+                RofStatusV1 status = makeStatus();
+                (void)api_.drain(session_, &status);
+            }
+            if (session_ != nullptr && api_.destroy_session != nullptr) {
+                api_.destroy_session(session_);
+            }
+        } catch (...) {
+        }
+        session_ = nullptr;
+        initialized_ = false;
     }
 
 private:
-    struct LiveFrameBuffers {
-        StripeFrameGroup frame;
-        std::vector<std::vector<std::uint8_t>> left;
-        std::vector<std::vector<std::uint8_t>> right;
-        std::vector<std::uint8_t> colorBgr;
-    };
-
-    Status appendStripe(const float* images,
-                        int imageIndex,
-                        CameraSide side,
-                        int frequencyIndex,
-                        int phaseStepIndex,
-                        int projectorIndex,
-                        std::vector<std::vector<std::uint8_t>>& storage,
-                        std::vector<StripeImage>& target) const
+    RofImageStackViewV1 makeInputStack(const float* data,
+                                       std::size_t stackBytes,
+                                       std::size_t rowBytes,
+                                       std::size_t imageBytes) const
     {
-        if (imageIndex < 0 || static_cast<std::uint32_t>(imageIndex) >= imageCount_) {
-            return {reconstruct_one_frame::StatusCode::InputPhaseStepMissing,
-                    "DssiThreeScanCompat",
-                    "projector index exceeds live image count"};
-        }
-        const std::size_t pixelCount =
-            static_cast<std::size_t>(config_.imageWidth) * static_cast<std::size_t>(config_.imageHeight);
-        storage.emplace_back(pixelCount);
-        const float* source = images + static_cast<std::size_t>(imageIndex) * pixelCount;
-        std::vector<std::uint8_t>& pixels = storage.back();
-        for (std::size_t idx = 0; idx < pixelCount; ++idx) {
-            pixels[idx] = floatToByte(source[idx]);
-        }
-
-        ImageView view;
-        view.data = pixels.data();
-        view.width = config_.imageWidth;
-        view.height = config_.imageHeight;
-        view.channels = 1;
-        view.strideBytes = config_.imageWidth;
-        view.elementType = ImageElementType::UInt8;
-        target.push_back({side, frequencyIndex, phaseStepIndex, projectorIndex, view});
-        return {};
+        RofImageStackViewV1 stack {};
+        stack.struct_size = sizeof(stack);
+        stack.data = data;
+        stack.byte_size = stackBytes;
+        stack.width = plan_.input_width;
+        stack.height = plan_.input_height;
+        stack.row_stride_bytes = static_cast<std::uint32_t>(rowBytes);
+        stack.image_stride_bytes = static_cast<std::uint32_t>(imageBytes);
+        stack.image_count = plan_.live_image_count;
+        stack.element_type = ROF_ELEMENT_FLOAT32_V1;
+        stack.memory_kind = ROF_MEMORY_HOST_V1;
+        stack.coordinate_space = ROF_COORDINATE_CALIBRATION_INPUT_V1;
+        return stack;
     }
 
-    Status appendColor(const float* leftImages, LiveFrameBuffers& output) const
+    std::string readApiError(RofSessionHandle session) const
     {
-        if (!config_.colorTextureEnabled) {
-            return {};
+        if (api_.copy_last_error == nullptr) {
+            return "stable ABI did not provide an error reader";
         }
-        if (config_.colorTextureProjectorIndices.size() != 3U) {
-            return {reconstruct_one_frame::StatusCode::ConfigInvalidValue,
-                    "DssiThreeScanCompat",
-                    "colorTextureProjectorIndices must contain B, G, and R"};
+        std::size_t required = 0U;
+        (void)api_.copy_last_error(session, nullptr, 0U, &required);
+        if (required == 0U) {
+            return "stable ABI returned no error text";
         }
-
-        const std::size_t pixelCount =
-            static_cast<std::size_t>(config_.imageWidth) * static_cast<std::size_t>(config_.imageHeight);
-        output.colorBgr.assign(pixelCount * 3U, 0U);
-        for (std::size_t channel = 0; channel < 3U; ++channel) {
-            const int projectorIndex = config_.colorTextureProjectorIndices[channel];
-            const int imageIndex = projectorIndex - 1;
-            if (imageIndex < 0 || static_cast<std::uint32_t>(imageIndex) >= imageCount_) {
-                return {reconstruct_one_frame::StatusCode::InputPhaseStepMissing,
-                        "DssiThreeScanCompat",
-                        "color projector index exceeds live image count"};
-            }
-            const float* source = leftImages + static_cast<std::size_t>(imageIndex) * pixelCount;
-            for (std::size_t idx = 0; idx < pixelCount; ++idx) {
-                output.colorBgr[idx * 3U + channel] = floatToByte(source[idx]);
-            }
-        }
-
-        ImageView view;
-        view.data = output.colorBgr.data();
-        view.width = config_.imageWidth;
-        view.height = config_.imageHeight;
-        view.channels = 3;
-        view.strideBytes = config_.imageWidth * 3;
-        view.elementType = ImageElementType::UInt8;
-        output.frame.leftColor = view;
-        output.frame.color = view;
-        return {};
+        std::vector<char> buffer(required, '\0');
+        (void)api_.copy_last_error(session, buffer.data(), buffer.size(), &required);
+        return std::string(buffer.data());
     }
 
-    Status buildFrame(const float* leftImages, const float* rightImages, LiveFrameBuffers& output) const
-    {
-        output.frame.frameId = frameId_++;
-        output.left.reserve(imageCount_);
-        output.right.reserve(imageCount_);
-
-        for (const StripeRequirement& requirement : config_.stripeRequirements) {
-            for (int step = 0; step < requirement.requiredPhaseSteps; ++step) {
-                const int projectorIndex = requirement.firstProjectorIndex + step;
-                const int imageIndex = projectorIndex - 1;
-                Status status = appendStripe(leftImages,
-                                             imageIndex,
-                                             CameraSide::Left,
-                                             requirement.frequencyIndex,
-                                             step,
-                                             projectorIndex,
-                                             output.left,
-                                             output.frame.leftStripes);
-                if (!status.ok()) {
-                    return status;
-                }
-                status = appendStripe(rightImages,
-                                      imageIndex,
-                                      CameraSide::Right,
-                                      requirement.frequencyIndex,
-                                      step,
-                                      projectorIndex,
-                                      output.right,
-                                      output.frame.rightStripes);
-                if (!status.ok()) {
-                    return status;
-                }
-            }
-        }
-        return appendColor(leftImages, output);
-    }
-
-    ReconstructEngine engine_;
-    ReconsConfig config_;
-    reconstruct_one_frame::CalibrationModel calibration_;
+    RofApiV1 api_ {};
+    RofSessionHandle session_ = nullptr;
+    RofCapturePlanV1 plan_ {};
+    RofCameraModelV1 camera_ {};
     std::string configPath_;
     std::string calibrationPath_;
     std::string lastError_;
     std::string lastSummary_;
-    std::uint32_t imageCount_ = 0;
-    mutable std::uint64_t frameId_ = 0;
+    std::uint64_t frameId_ = 0U;
     bool initialized_ = false;
 };
 
 } // namespace StructureLight
 
+#if defined(_WIN32)
+#define ROF_LEGACY_API __declspec(dllexport)
+#else
+#define ROF_LEGACY_API
+#endif
+
 extern "C" {
 
-__declspec(dllexport) StructureLight::threeScan* threeScan_create()
+ROF_LEGACY_API StructureLight::threeScan* threeScan_create() noexcept
 {
-    return new StructureLight::threeScan();
+    try {
+        auto object = std::make_unique<StructureLight::threeScan>();
+        return object.release();
+    } catch (...) {
+        return nullptr;
+    }
 }
 
-__declspec(dllexport) void threeScan_init(StructureLight::threeScan* obj,
-                                          cv::Mat* cameraMatrix,
-                                          std::string* version,
-                                          unsigned int* imageCount)
+ROF_LEGACY_API void threeScan_init(StructureLight::threeScan* object,
+                                   cv::Mat* cameraMatrix,
+                                   std::string* version,
+                                   unsigned int* imageCount) noexcept
 {
-    if (obj == nullptr || cameraMatrix == nullptr || version == nullptr || imageCount == nullptr) {
+    if (object == nullptr || cameraMatrix == nullptr || version == nullptr || imageCount == nullptr) {
         return;
     }
-    obj->init(*cameraMatrix, *version, *imageCount);
-}
-
-__declspec(dllexport) void threeScan_prepareData(StructureLight::threeScan* obj,
-                                                 const std::vector<std::string>* paths,
-                                                 float* data)
-{
-    if (obj != nullptr && paths != nullptr) {
-        obj->prepareData(*paths, data);
+    try {
+        object->init(*cameraMatrix, *version, *imageCount);
+    } catch (const std::exception& ex) {
+        object->setFailure(ex.what());
+        *version = "reconstructOneFrame init failed";
+        *imageCount = 0U;
+    } catch (...) {
+        object->setFailure("unknown threeScan_init exception");
+        *version = "reconstructOneFrame init failed";
+        *imageCount = 0U;
     }
 }
 
-__declspec(dllexport) int threeScan_startScan(StructureLight::threeScan* obj,
-                                              bool isAiScan,
-                                              bool isMetalScan,
-                                              const float* leftImages,
-                                              const float* rightImages,
-                                              int* exposure,
-                                              cv::Mat* depthImage,
-                                              cv::Mat* colorImage,
-                                              cv::Mat* normalImage,
-                                              cv::Mat* qualityInfo,
-                                              const std::string* basePath)
+ROF_LEGACY_API void threeScan_prepareData(StructureLight::threeScan* object,
+                                          const std::vector<std::string>* paths,
+                                          float* data) noexcept
 {
-    if (obj == nullptr || exposure == nullptr || depthImage == nullptr ||
+    if (object == nullptr || paths == nullptr) {
+        return;
+    }
+    try {
+        object->prepareData(*paths, data);
+    } catch (...) {
+        object->setFailure("threeScan_prepareData exception");
+    }
+}
+
+ROF_LEGACY_API int threeScan_startScan(StructureLight::threeScan* object,
+                                       bool isAiScan,
+                                       bool isMetalScan,
+                                       const float* leftImages,
+                                       const float* rightImages,
+                                       int* exposure,
+                                       cv::Mat* depthImage,
+                                       cv::Mat* colorImage,
+                                       cv::Mat* normalImage,
+                                       cv::Mat* qualityInfo,
+                                       const std::string* basePath) noexcept
+{
+    if (object == nullptr || exposure == nullptr || depthImage == nullptr ||
         colorImage == nullptr || normalImage == nullptr || qualityInfo == nullptr ||
         basePath == nullptr) {
         return -1;
     }
-    return obj->startScan(isAiScan,
-                          isMetalScan,
-                          leftImages,
-                          rightImages,
-                          *exposure,
-                          *depthImage,
-                          *colorImage,
-                          *normalImage,
-                          *qualityInfo,
-                          *basePath);
-}
-
-__declspec(dllexport) const char* threeScan_getLastError(StructureLight::threeScan* obj)
-{
-    return obj == nullptr ? "threeScan object is null" : obj->lastError();
-}
-
-__declspec(dllexport) const char* threeScan_getLastSummary(StructureLight::threeScan* obj)
-{
-    return obj == nullptr ? "threeScan object is null" : obj->lastSummary();
-}
-
-__declspec(dllexport) void threeScan_destroy(StructureLight::threeScan* obj)
-{
-    if (obj != nullptr) {
-        obj->destroy();
+    try {
+        return object->startScan(isAiScan,
+                                 isMetalScan,
+                                 leftImages,
+                                 rightImages,
+                                 *exposure,
+                                 *depthImage,
+                                 *colorImage,
+                                 *normalImage,
+                                 *qualityInfo,
+                                 *basePath);
+    } catch (const std::exception& ex) {
+        object->setFailure(ex.what());
+        return -1;
+    } catch (...) {
+        object->setFailure("unknown threeScan_startScan exception");
+        return -1;
     }
 }
 
-__declspec(dllexport) void threeScan_delete(StructureLight::threeScan* obj)
+ROF_LEGACY_API const char* threeScan_getLastError(StructureLight::threeScan* object) noexcept
 {
-    delete obj;
+    return object == nullptr ? "threeScan object is null" : object->lastError();
+}
+
+ROF_LEGACY_API const char* threeScan_getLastSummary(StructureLight::threeScan* object) noexcept
+{
+    return object == nullptr ? "threeScan object is null" : object->lastSummary();
+}
+
+ROF_LEGACY_API void threeScan_destroy(StructureLight::threeScan* object) noexcept
+{
+    if (object != nullptr) {
+        object->destroy();
+    }
+}
+
+ROF_LEGACY_API void threeScan_delete(StructureLight::threeScan* object) noexcept
+{
+    try {
+        std::unique_ptr<StructureLight::threeScan> owner(object);
+    } catch (...) {
+    }
 }
 
 } // extern "C"

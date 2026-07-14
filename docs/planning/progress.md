@@ -557,3 +557,107 @@
   - `cmake --build build --config Release --target reconstructOneFrame`：成功；
   - `cmake --build build --config Release --target DentalScanSystem`：成功；
   - P/Invoke smoke 设置 `ROF_CALIB_PATH=D:/Data/Calib/2607011016_mach6/calibResult.json` 后可 `LoadLibraryEx`、`threeScan_create/destroy/delete`。
+
+## 2026-07-13 Res1F 与 DSSI 跨仓库架构审计
+
+- 已读取 `planning-with-files`、`brainstorming`、`using-superpowers` 与 `cpp-pro`，本轮采用事实审计、路线比较、设计确认、文档固化的顺序。
+- 已确认主仓库 `main@1accb19`、下游适配 worktree `D:\code\_worktrees\dssi-adapt-res1f@bc0ad329`，并保留现有未跟踪输出。
+- 首次三文件规划补丁因错误假定 `findings.md` 标题而整体失败；读取真实末尾后成功改为精确追加。
+- 已在 `task_plan.md` 增加阶段 76-82；当前进入两仓库代码、边界与数据流取证。
+- 已逐行读取 Res1F 公共接口、DSSI shim、CMake 和 DSSI 适配差异，确认 ABI、配置注入、数据拷贝、部署耦合和语义兼容方面均存在结构性问题。
+- 已将第一批事实写入 `findings.md`；下一步补齐导出函数异常边界、engine/pipeline 状态模型、DSSI loader 销毁顺序和扫描线程调用上下文。
+- 已确认 DSSI 初始化未检查 Res1F `void init` 的失败状态，导出层无异常防火墙，pipeline 静态/动态校验混跑，CUDA workspace 生命周期与实例脱钩。
+- 已发现 DSSI 保存线程 detach 且捕获服务对象，属于跨输出/服务生命周期风险；下一步追踪 LocalFrame、配置分裂和测试覆盖。
+- 已确认 LocalFrame 绕过 Res1F、DSSI CTest 为 0、backend 开关可与实际 DLL 路径不一致、GPU 阶段存在 host 往返和 point-cloud 每帧分配。
+- 已确认显示镜像影响物理遮挡 mask、实时采集线程串联过多消费者、普通 bool 跨 detach 线程读写、SLAM 启动失败不阻断扫描启动。
+- 已复核既有概要设计，确认其“一次 H2D、GPU buffer pool、显式契约、DSSI 兼容层仅过渡”的目标正确，但当前实现尚未兑现。
+- 已比较三条路线并选择版本化 C ABI + Provider 反腐层作为推荐方向；开始撰写最终架构审计文档。
+- 已写入 `docs/design/2026-07-13-res1f-dssi-architecture-assessment-and-refactoring.md`，包含事实数据流、评分、风险、目标架构、ABI、迁移和验收门禁。
+- 文档自检纠正 init failure 的精确语义：calibration/engine 失败时 `imageCount` 可能非零；同时移除示例占位符和纯 C 声明中的 C++ `noexcept`。
+- 最终文档检查：722 行、16 个章节、18 个闭合代码围栏、2 个 Mermaid 块、0 个占位符、0 个尾随空白；8 组关键源码行号引用均在文件范围内。
+- `git diff --check` 通过；本机未安装 `mmdc` / `markdownlint`，Mermaid 完成结构复核但未执行 CLI 渲染。
+- 本轮只新增架构评估文档并更新规划记录，没有修改算法或 DSSI 生产代码，没有提交或推送。
+
+## 2026-07-13 架构重构 Phase 0/1 实施
+
+- 用户批准按架构评估文档开始修复重构。
+- 使用 `writing-plans` 将第一批限制为稳定 C ABI、Legacy shim 委托、DSSI Provider Host 和 fail-closed 启动；GPU residency、坐标契约和线程 pipeline 留在后续独立 phase。
+- 实施计划：`docs/superpowers/plans/2026-07-13-rof-c-abi-dssi-provider-phase01.md`。
+- Res1F 原地实施以保留未提交设计文档；DSSI 已处于 `adapt-res1f` linked worktree，不创建嵌套 worktree；未授权 commit/push。
+- 实施前基线：Res1F Release 构建成功，CTest `10/10` 通过；DSSI `DentalScanSystem` Release 构建成功，CTest 为 `0` 项。
+- Task 1/2/3 进展：新增纯 C ABI contract、engine descriptor 和 opaque session；红绿测试完成，`rof_c_header_compile_test`、`engine_descriptor_test`、`rof_plugin_contract_test` 为 `3/3` 通过。
+- Task 4 完成：Legacy shim 已完全委托稳定 ABI，所有旧导出都有异常防火墙；关闭自动导出后复现并定位内部链接失败，按计划拆为 `rofCore` 静态核心和仅含 ABI adapter 的 `reconstructOneFrame` DLL。
+- Res1F Release 全量构建成功，CTest `14/14` 通过；`dumpbin /exports` 确认 DLL 仅有 9 个命名导出：`rof_get_api` 和 8 个迁移期 `threeScan_*`。
+- 工具错误：首次并行导出检查的 PowerShell `vswhere` 路径使用了错误单引号插值；已改用当前 VS 2022 `dumpbin.exe` 绝对路径，产品构建和测试未受影响。
+
+## 2026-07-13 架构规划收口与指定数据性能大比拼
+
+- 恢复上一执行现场，核对架构文档、Phase 0/1 实施计划、两仓库状态和 benchmark 产物。
+- 将实际已落地的 DSSI Provider Host、fail-closed 启动和 contract test 同步为阶段 87-89 complete。
+- 新增阶段 91-96，覆盖剩余架构实施、CUDA workspace 验证、Res1F/Legacy 全量对比、报告和最终审计。
+- 确认 RawCaptureReplay 已可读取 `SourceImg/L0..R17.bmp` 并输出逐帧 CSV；无参 usage 探测返回退出码 1，后续改用源码确认 CLI。
+- 确认 Legacy 首次 smoke 使用了错误的 DSSI runtime YAML，已标记作废；下一步生成绝对标定路径的独立 benchmark 配置并先复跑 `0..2`。
+- Provider frame request 已补入 `frameId/captureTimestamp/aiScan/metalScan/exposure`；Legacy provider 不再写死 non-metal，replay 支持 `metal|non-metal`。
+- 修改后 DSSI Provider/replay/DentalScanSystem Release 构建成功，contract test `1/1` 通过；未出现新增 OpenCV C5054。
+- Legacy 配置传播根因定位为旧导出 `threeScan_init` 无 config 参数；隔离 runtime smoke 后 Res1F/Legacy 均 `3/3` 成功。
+- Legacy App 标定探针确认 `[CalibLoad] path=D:/Data/Calib/2607021545_mach6/calibParams.yml` 且 `isMetalScan=true`。
+- 第一轮 `0..294` 全量 replay 两边均 `295/295` 成功；先跑 Res1F 导致 cold-cache load 均值 `27.264ms`，后跑 Legacy 为 `6.537ms`，将追加反向顺序轮次消除 I/O 次序误导。
+- 完成 Legacy-first 反向轮次；两边点数和 status 跨轮完全一致，缓存预热性能结论稳定为 Legacy 领先。
+- 完成 Legacy non-metal 控制组，确认 metal 模式使 Legacy 总点数增加约 25.89%，但 Res1F 对 non-metal 仍只有 63.04% 点数。
+- 新增 `rof_abi_layout_test`，并把 DLL export test 扩展为 100 次动态 load/create/destroy/unload；聚焦测试 `3/3` 通过。
+- 连续 frame 0/1/2 验证 point-cloud `deviceAllocationCount=13/0/0`，记录 Phase 3 尚未消除的 H2D 和 host vector 边界。
+- 已追加架构文档第 17 节实施复核，并创建 `docs/benchmarks/2026-07-13-07131555-res1f-vs-legacy-benchmark.md`。
+- 最终新鲜验证：Res1F Release 全量构建成功、CTest `15/15`；DSSI Provider/replay/DentalScanSystem 构建成功、CTest `1/1`。
+- `dumpbin` 确认 DLL 仅有 9 个命名导出；两个仓库 `git diff --check` 通过，benchmark 脚本 PowerShell parser error=`0`。
+- 按用户约束保留两个工作区的未提交修改，不 commit、不 push，不删除 `output/` 或 `scripts/__pycache__/`。
+
+## 2026-07-13 Legacy `46375a0e` 能力差异审计与移植
+
+- 确认 Legacy 本地对象库已包含用户指定提交，无需 fetch；工作树保持 `feature/single-frame-quality@27613a3` 未变。
+- 解析 merge 双亲和 first-parent 历史，开始按最终树相对第二父提取功能增量。
+- 初筛已实现项与默认关闭实验项；下一步完整追踪 clear255 和颜色高亮压缩的数据输入、CUDA 阶段、metal 分支和输出影响。
+- 完成 merge 第二父差异审计：错误隔离、配置校验和主要匹配约束在 Res1F 已实现或更强；默认关闭的 uniqueness/candidate filter/row-DP/诊断图不纳入本轮。
+- 精确确认 `clear255` 在 Legacy 中属于 disparity 前有效性 gate，高光压缩属于颜色矩阵/gamma 前的辅助帧预处理。
+- 形成推荐设计：ABI 1.2 frame flags + DSSI mode 转发 + session-owned GPU clear mask + disparity kernel gate；旧 ABI 1.1 结构保持前缀兼容，AI 未实现时 fail closed。
+- 当前按 brainstorming 设计门禁等待用户确认；尚未修改算法、ABI 或 DSSI 业务代码。
+- 用户确认推荐方案并要求使用 07131838 数据与最新 GitLab Legacy 比拼。
+- 完成 ABI 1.2 frame flags、DSSI mode 转发、AI fail-closed、GPU clear255、高光压缩和质量 signal rectification。
+- 合成测试覆盖 250 阈值、mask 膨胀、metal/non-metal、高光 255->250、ABI 1.1 前缀和 capability。
+- 从 GitLab 刷新并新鲜构建 `origin/main@46375a0e`；隔离 staging 明确的 Legacy 一级依赖，避免旧 build 目录污染。
+- 完成 479 帧 v1/v2 探针、最终 v3/v4 反向顺序和 clear255-off 消融；所有完整轮次双方均 479/479。
+- 新增 `docs/benchmarks/2026-07-13-07131838-res1f-vs-latest-legacy-quality-benchmark.md`，明确性能和质量结果仍未追平。
+
+## 2026-07-13 Res1F 标定输入 JSON-only 收口
+
+- 用户明确要求 Res1F 不再接受 YAML/YML；Legacy 保留 YAML 读取和 benchmark 隔离配置。
+- 已审计解析器、默认配置、测试、文档和仓库文件；确认需要删除 `CalibrationModel.cpp` 的 YAML 回退，并替换 production 配置中的旧 `calibParamsPath`。
+- 首次并行搜索使用 Windows 不接受的 `README*` 位置参数而退出；改用 `--glob` 后完成审计，没有产生文件改动。
+- 已先修改 `calibration_model_test`，要求非 JSON 内容、JSON 扩展名下的 YAML 内容、以及 `.yml/.yaml` 路径下的合法 JSON 都返回 `CalibrationParseFailed`；下一步运行红灯测试。
+- 红灯验证通过：旧实现的 `calibration_model_test` 在“普通非 JSON 应返回 `CalibrationParseFailed`”处失败。
+- 删除 `CalibrationModel.cpp` 的 YAML 正则 parser 和内容回退，增加 `.yml/.yaml`（大小写不敏感）路径拒绝，定向测试转绿。
+- production 配置改为 `calibResultPath=calibResult.json`；gypsum Res1F benchmark 默认标定同步改为 JSON，0713 Legacy 对比脚本中的 YAML 路径保留。
+- 当前架构评估和早期概要设计已明确 JSON-only；第五阶段历史计划保留历史结论，但删除当前 Res1F YAML 调用命令并标注兼容已撤销。
+- Res1F Release 全量构建成功，CTest `15/15` 通过。
+- DSSI 首次使用旧 target 名导致 MSBuild `MSB1009`；查明当前 CMake target 是小写名称后，provider contract、raw replay、DentalScanSystem 全部构建成功，CTest `1/1` 通过。
+- 实际 sample dry-run：`calibResult.json` 返回 `Ok`/exit 0；同目录 `calibParams.yml` 返回 `CalibrationParseFailed`/exit 1，明确提示改用 `calibResult.json`。
+- 最终审计：production 无 `parseCalibrationYaml`/`extractYaml*`/`calibParamsPath` 残留；配置 JSON 和 Python benchmark AST 解析通过；拒绝测试未留下临时文件；两仓库 `git diff --check` 通过。
+- 仓库内非 Legacy 的 `.yaml` 文件仅为 CMake 自动生成的 `build/CMakeFiles/CMakeConfigureLog.yaml`，它不是应用输入且每次 configure 会重建，因此不删除。
+- 自审修正文档矛盾：mode/clear255 补齐并未消除阶段间 D2H/H2D，Phase 3 仍保持未完成；按既有约束保留未提交工作区，不 commit/push/cleanup。
+
+## 2026-07-13 07131838 大比拼重大缺陷复核
+
+- 用户指出 benchmark 期间后台 SLAM 可能运行；本轮将性能排名标记为受污染，不据此修复。
+- 继续审查跨轮确定的结果差异：Res1F/Legacy 总点数比 `0.479392`、质量均值 `0.501021/0.886948`、LocalDiscontinuity 出现帧数 `441/255`。
+- 已建立阶段 106-110，下一步读取原始 CSV/metadata 并按帧和阶段定位根因。
+- 首次并行取证中的配置差异 PowerShell 存在空管道语法错误，整批在解析阶段停止；没有运行算法或修改文件，已拆分重跑。
+- 聚焦查询第二次重复同类空管道语法错误；按错误协议停止该模式，后续只使用显式数组收集结果。
+- 配置公共算法键实际一致；JSON/YAML 十一组标定矩阵用 OpenCV FileStorage 比较为逐元素相同。
+- 完成 baseline/smoothing/filter-off 三帧消融，确认困难帧在连续性过滤崩塌，关闭过滤和开启 smoothing 都不是可接受修复。
+- 用 OpenCV 将 frame 2/26/311 的 36 张输入预 rectification，并用 JSON 无二次 remap 标定运行；三帧 filteredValid 均明显提升，确认 phase rectification 时序缺陷。
+- 已写入 `docs/superpowers/specs/2026-07-13-phase-rectification-before-unwrapping-design.md`，选择强度域 rectification + 显式 phase coordinate domain 方案。
+- 坐标域传播、rectified intensity sampling、禁止二次 phase remap 均完成红绿测试；共享 `CudaRectification.cuh` 保证 phase/color/mask 使用同一反向映射。
+- 按用户要求在坐标域、共享 POD、atan2 前 rectification 和 sensor-domain 兼容分支添加了维护者注释。
+- DSSI metal `20..31`：旧/新 Res1F 总点数 `261826/851891`，质量均值 `0.233907/0.701612`；12/12 成功。
+- metal `0..478`：Res1F 479/479，总点数 `36421770`，对 Legacy 比例 `0.716765`；质量均值 `0.710554`，Pearson `0.861027`。
+- non-metal `0..478`：Res1F/Legacy 点数比 `0.951188`，质量均值 `0.722236/0.769732`，Pearson `0.971625`；剩余 metal 差异主要是 Legacy hole filling。
+- 新鲜验证：Res1F Release build + CTest `15/15`；DSSI provider/replay/system build + CTest `1/1`。

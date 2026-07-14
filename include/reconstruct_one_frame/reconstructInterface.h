@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <array>
 #include <memory>
 #include <string>
 #include <vector>
@@ -100,6 +101,8 @@ struct StripeImage {
 
 struct StripeFrameGroup {
     std::uint64_t frameId = 0;
+    bool aiScan = false;
+    bool metalScan = false;
     std::vector<StripeImage> leftStripes;
     std::vector<StripeImage> rightStripes;
     ImageView color;
@@ -150,6 +153,25 @@ struct FrameResult {
     std::string pointCloudSummary;
 };
 
+struct CaptureStripeRequirement {
+    int frequencyIndex = -1;
+    int frequencyValue = 0;
+    int requiredPhaseSteps = 0;
+    int firstProjectorIndex = 1;
+    int phaseStepDirection = -1;
+};
+
+struct EngineDescriptor {
+    int imageWidth = 0;
+    int imageHeight = 0;
+    std::uint32_t liveImageCount = 0;
+    std::vector<CaptureStripeRequirement> stripeRequirements;
+    std::vector<int> colorProjectorIndices;
+    int cameraModelRows = 0;
+    int cameraModelCols = 0;
+    std::array<double, 16> cameraModelValues {};
+};
+
 struct InitOptions {
     std::string configPath;
     std::string calibrationPath;
@@ -178,6 +200,7 @@ public:
     ReconstructEngine& operator=(ReconstructEngine&&) noexcept;
 
     Status init(const InitOptions& options);
+    Status describe(EngineDescriptor& descriptor) const;
     FrameResult run(const StripeFrameGroup& frame);
     void shutdown();
 
@@ -189,24 +212,8 @@ private:
 #pragma warning(pop)
 #endif
 
-// Stable C ABI reservation for a later DSSI-compatible boundary.
-//
-// The exported threeScan_* functions in the DSSI compatibility source are a
-// temporary production shim for the existing DSSI/Legacy contract. They
-// intentionally mirror the old DLL ABI, including cv::Mat/std::string usage, so
-// DSSI can hot-load reconstructOneFrame.dll without changing scanner runtime
-// call sites. They are not the future stable ABI.
-//
-// Future stable C ABI functions must use opaque handles, POD structs,
-// pointer+count arrays, and explicit ownership rules. Do not expose std::vector,
-// std::string, cv::Mat, or C++ classes across that stable C ABI boundary.
-extern "C" {
-// Reserved naming shape:
-// ROF_API int rof_create(void** handle);
-// ROF_API int rof_init(void* handle, const RofInitOptions* options);
-// ROF_API int rof_run(void* handle, const RofFrameInput* input, RofFrameOutput* output);
-// ROF_API int rof_destroy(void* handle);
-}
+// The stable plugin boundary is declared in rof_c_api.h. This C++ API remains
+// convenient for in-process tools but is not the cross-compiler DLL contract.
 
 ROF_API const char* statusCodeName(StatusCode code) noexcept;
 

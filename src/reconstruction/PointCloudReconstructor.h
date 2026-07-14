@@ -5,6 +5,7 @@
 #include "phase/PhaseUnwrapper.h"
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -34,6 +35,9 @@ struct PointCloudGridPoint {
     float matchCost = 0.0F;
     float modulation = 0.0F;
     int candidateCount = 0;
+    bool semanticBackground = false;
+    bool highFrequencySaturated = false;
+    bool highFrequencyLowLight = false;
 };
 
 struct PointCloudOutputOptions {
@@ -50,6 +54,8 @@ struct PointCloudReconstructionResult {
     std::size_t filteredGridValidPointCount = 0;
     std::size_t leftRightRejectedPointCount = 0;
     std::size_t rightPhaseMonotonicRejectedPointCount = 0;
+    std::size_t clear255RejectedPixelCount = 0;
+    bool semanticMaskApplied = false;
     std::string matchingSummary;
     std::vector<PointCloudGridPoint> gridPoints;
     std::vector<PointCloudVertex> vertices;
@@ -60,10 +66,31 @@ struct PointCloudReconstructionResult {
     bool normalsComputed = false;
 };
 
+class PointCloudCudaWorkspace {
+public:
+    struct Impl;
+
+    PointCloudCudaWorkspace();
+    ~PointCloudCudaWorkspace();
+    PointCloudCudaWorkspace(PointCloudCudaWorkspace&&) noexcept;
+    PointCloudCudaWorkspace& operator=(PointCloudCudaWorkspace&&) noexcept;
+    PointCloudCudaWorkspace(const PointCloudCudaWorkspace&) = delete;
+    PointCloudCudaWorkspace& operator=(const PointCloudCudaWorkspace&) = delete;
+    void reset() noexcept;
+
+    std::unique_ptr<Impl> impl_;
+};
+
 PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseResult& unwrappedPhase,
                                                          const CalibrationModel& calibration,
                                                          const ReconsConfig& config,
                                                          const StripeFrameGroup& frame,
+                                                         const PointCloudOutputOptions& outputOptions = {});
+PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseResult& unwrappedPhase,
+                                                         const CalibrationModel& calibration,
+                                                         const ReconsConfig& config,
+                                                         const StripeFrameGroup& frame,
+                                                         PointCloudCudaWorkspace& workspace,
                                                          const PointCloudOutputOptions& outputOptions = {});
 
 } // namespace reconstruct_one_frame

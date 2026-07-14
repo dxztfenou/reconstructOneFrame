@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 
 using namespace reconstruct_one_frame;
 
@@ -40,7 +41,8 @@ int main()
     }
     status = loadCalibrationResultJson(invalidPath.string(), model);
     std::filesystem::remove(invalidPath);
-    require(status.code == StatusCode::CalibrationFieldMissing, "expected CalibrationFieldMissing for unrecognized calibration text");
+    require(status.code == StatusCode::CalibrationParseFailed,
+            "expected CalibrationParseFailed for non-JSON calibration text");
 
     const auto missingFieldPath = std::filesystem::temp_directory_path() / "rof_missing_calib_field.json";
     {
@@ -67,9 +69,9 @@ int main()
     require(model.projectionLeft.size() == 12, "expected P_L matrix data");
     require(model.qMatrix.size() == 16, "expected OpenCV Q matrix data");
 
-    const auto yamlPath = std::filesystem::temp_directory_path() / "rof_calibParams.yml";
+    const auto yamlContentJsonPath = std::filesystem::temp_directory_path() / "rof_yaml_content_calib.json";
     {
-        std::ofstream out(yamlPath);
+        std::ofstream out(yamlContentJsonPath);
         out << "%YAML:1.0\n"
             << "KK_L: !!opencv-matrix\n   rows: 3\n   cols: 3\n   dt: d\n   data: [1,0,0,0,1,0,0,0,1]\n"
             << "Dist_L: !!opencv-matrix\n   rows: 5\n   cols: 1\n   dt: d\n   data: [0,0,0,0,0]\n"
@@ -84,11 +86,28 @@ int main()
             << "Q: !!opencv-matrix\n   rows: 4\n   cols: 4\n   dt: d\n   data: [1,0,0,0,0,1,0,0,0,0,0,1,0,0,1,0]\n"
             << "image_size: [424, 400]\n";
     }
-    status = loadCalibrationResultJson(yamlPath.string(), model);
-    std::filesystem::remove(yamlPath);
-    require(status.ok(), "expected OpenCV YAML calibParams to parse");
-    require(model.qMatrix.size() == 16, "expected YAML Q matrix data");
-    require(model.projectionRight.size() == 12, "expected YAML P_R matrix data");
+    status = loadCalibrationResultJson(yamlContentJsonPath.string(), model);
+    std::filesystem::remove(yamlContentJsonPath);
+    require(status.code == StatusCode::CalibrationParseFailed,
+            "expected YAML content with a JSON extension to be rejected");
+
+    std::ifstream validJsonInput("tests/data/phase2_valid_calibResult.json", std::ios::binary);
+    const std::string validJson((std::istreambuf_iterator<char>(validJsonInput)),
+                                std::istreambuf_iterator<char>());
+    require(!validJson.empty(), "expected valid JSON calibration fixture");
+
+    for (const char* extension : {".yml", ".yaml", ".YML"}) {
+        const auto yamlExtensionPath =
+            std::filesystem::temp_directory_path() / (std::string("rof_json_calibration") + extension);
+        {
+            std::ofstream out(yamlExtensionPath, std::ios::binary);
+            out << validJson;
+        }
+        status = loadCalibrationResultJson(yamlExtensionPath.string(), model);
+        std::filesystem::remove(yamlExtensionPath);
+        require(status.code == StatusCode::CalibrationParseFailed,
+                "expected .yml/.yaml calibration paths to be rejected even when content is JSON");
+    }
 
     return EXIT_SUCCESS;
 }

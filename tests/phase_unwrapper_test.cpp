@@ -40,9 +40,12 @@ int main()
     ManifestFrame frame = loadManifestFrame("tests/data/phase2_valid_manifest.json");
     WrappedPhaseResult wrapped = computeWrappedPhaseCuda(frame.frame, config);
     require(wrapped.status.ok(), "expected CUDA wrapped phase to compute");
+    wrapped.coordinateDomain = PhaseCoordinateDomain::Rectified;
 
     UnwrappedPhaseResult unwrapped = computeUnwrappedPhaseCuda(wrapped, config);
     require(unwrapped.status.ok(), "expected CUDA unwrap to compute");
+    require(unwrapped.coordinateDomain == PhaseCoordinateDomain::Rectified,
+            "expected unwrap to preserve the wrapped-phase coordinate domain");
     require(unwrapped.stats.stageName == "phase_unwrap_cuda", "expected CUDA unwrap stage");
     require(unwrapped.left.absolutePhase.size() == 16, "expected left absolute phase pixels");
     require(unwrapped.right.absolutePhase.size() == 16, "expected right absolute phase pixels");

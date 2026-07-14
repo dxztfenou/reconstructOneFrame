@@ -1,5 +1,7 @@
 #include "reconstruction/PointCloudReconstructor.h"
 
+#include "calibration_model/CudaRectification.cuh"
+
 #include <cuda_runtime.h>
 #include <math_constants.h>
 
@@ -27,6 +29,7 @@ double elapsedMilliseconds(SteadyClock::time_point start)
 
 struct DeviceBuffer {
     void* ptr = nullptr;
+    std::size_t capacity = 0U;
 
     DeviceBuffer() = default;
     DeviceBuffer(const DeviceBuffer&) = delete;
@@ -52,6 +55,11 @@ struct DeviceBuffer {
     }
 };
 
+Status ensureCapacity(DeviceBuffer& buffer,
+                      std::size_t bytes,
+                      const char* operation,
+                      bool* allocated = nullptr);
+
 struct HostFloat3 {
     float x = 0.0F;
     float y = 0.0F;
@@ -64,17 +72,22 @@ struct DisparityWindow {
     float maxDisparity = 0.0F;
 };
 
-struct RemapCalibration {
-    float k[9] = {};
-    float dist[8] = {};
-    float rInv[9] = {};
-    float p[12] = {};
-    int distCount = 0;
-};
-
 struct ColorCorrection {
     float matrix[12] = {};
     float gamma = 1.0F;
+};
+
+constexpr int kMaxQualityPhaseSteps = 16;
+
+using cuda_rectification::RemapCalibration;
+using cuda_rectification::hasRectificationCalibration;
+using cuda_rectification::makeRemapCalibration;
+using cuda_rectification::rectifiedToRawPixel;
+
+struct QualityPhaseWeights {
+    float sinWeights[kMaxQualityPhaseSteps] = {};
+    float cosWeights[kMaxQualityPhaseSteps] = {};
+    int stepCount = 0;
 };
 
 Status cudaStatus(cudaError_t error, const char* operation)
@@ -83,6 +96,35 @@ Status cudaStatus(cudaError_t error, const char* operation)
         return {};
     }
     return {StatusCode::CudaKernelFailed, "PointCloudReconstructorCuda", std::string(operation) + ": " + cudaGetErrorString(error)};
+}
+
+Status ensureCapacity(DeviceBuffer& buffer,
+                      std::size_t bytes,
+                      const char* operation,
+                      bool* allocated)
+{
+    if (allocated != nullptr) {
+        *allocated = false;
+    }
+    if (buffer.ptr != nullptr && buffer.capacity >= bytes) {
+        return {};
+    }
+    if (buffer.ptr != nullptr) {
+        const Status freeStatus = cudaStatus(cudaFree(buffer.ptr), "cudaFree undersized point cloud buffer");
+        buffer.ptr = nullptr;
+        buffer.capacity = 0U;
+        if (!freeStatus.ok()) {
+            return freeStatus;
+        }
+    }
+    Status status = cudaStatus(cudaMalloc(&buffer.ptr, bytes), operation);
+    if (status.ok()) {
+        buffer.capacity = bytes;
+        if (allocated != nullptr) {
+            *allocated = true;
+        }
+    }
+    return status;
 }
 
 bool isValidPoint(const HostFloat3& point)
@@ -122,72 +164,6 @@ DisparityWindow makeDisparityWindow(const CalibrationModel& calibration,
     window.maxDisparity = std::min(std::max(d0, d1) + margin, limit);
     window.enabled = window.minDisparity <= window.maxDisparity;
     return window;
-}
-
-bool hasRectificationCalibration(const CalibrationModel& calibration)
-{
-    return calibration.leftIntrinsics.size() == 9 &&
-           calibration.rightIntrinsics.size() == 9 &&
-           !calibration.leftDistortion.empty() &&
-           !calibration.rightDistortion.empty() &&
-           calibration.rectificationLeft.size() == 9 &&
-           calibration.rectificationRight.size() == 9 &&
-           calibration.projectionLeft.size() == 12 &&
-           calibration.projectionRight.size() == 12;
-}
-
-std::array<double, 9> invert3x3(const std::vector<double>& matrix)
-{
-    const double a = matrix[0];
-    const double b = matrix[1];
-    const double c = matrix[2];
-    const double d = matrix[3];
-    const double e = matrix[4];
-    const double f = matrix[5];
-    const double g = matrix[6];
-    const double h = matrix[7];
-    const double i = matrix[8];
-    const double det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
-    if (std::fabs(det) <= 1.0e-12) {
-        return {1.0, 0.0, 0.0,
-                0.0, 1.0, 0.0,
-                0.0, 0.0, 1.0};
-    }
-    const double inv = 1.0 / det;
-    return {
-        (e * i - f * h) * inv,
-        (c * h - b * i) * inv,
-        (b * f - c * e) * inv,
-        (f * g - d * i) * inv,
-        (a * i - c * g) * inv,
-        (c * d - a * f) * inv,
-        (d * h - e * g) * inv,
-        (b * g - a * h) * inv,
-        (a * e - b * d) * inv
-    };
-}
-
-RemapCalibration makeRemapCalibration(const std::vector<double>& intrinsics,
-                                      const std::vector<double>& distortion,
-                                      const std::vector<double>& rectification,
-                                      const std::vector<double>& projection)
-{
-    RemapCalibration remap;
-    for (std::size_t i = 0; i < intrinsics.size() && i < 9; ++i) {
-        remap.k[i] = static_cast<float>(intrinsics[i]);
-    }
-    for (std::size_t i = 0; i < distortion.size() && i < 8; ++i) {
-        remap.dist[i] = static_cast<float>(distortion[i]);
-    }
-    remap.distCount = static_cast<int>(std::min<std::size_t>(distortion.size(), 8));
-    const std::array<double, 9> inverse = invert3x3(rectification);
-    for (std::size_t i = 0; i < inverse.size(); ++i) {
-        remap.rInv[i] = static_cast<float>(inverse[i]);
-    }
-    for (std::size_t i = 0; i < projection.size() && i < 12; ++i) {
-        remap.p[i] = static_cast<float>(projection[i]);
-    }
-    return remap;
 }
 
 __device__ float sampleBilinear(const float* image, int width, int height, float x, float y)
@@ -240,43 +216,64 @@ __device__ float sampleBilinearColor(const unsigned char* image,
     return top * (1.0F - dy) + bottom * dy;
 }
 
-__device__ bool rectifiedToRawPixel(int u,
-                                    int v,
-                                    RemapCalibration calibration,
-                                    float& srcX,
-                                    float& srcY)
+__device__ float sampleBilinearGrayU8(const unsigned char* image,
+                                      int width,
+                                      int height,
+                                      float x,
+                                      float y)
 {
-    const float fxNew = calibration.p[0];
-    const float fyNew = calibration.p[5];
-    const float cxNew = calibration.p[2];
-    const float cyNew = calibration.p[6];
-    if (fabsf(fxNew) <= 1.0e-6F || fabsf(fyNew) <= 1.0e-6F) {
+    if (!isfinite(x) || !isfinite(y) || x < 0.0F || y < 0.0F ||
+        x >= static_cast<float>(width - 1) || y >= static_cast<float>(height - 1)) {
+        return CUDART_NAN_F;
+    }
+    const int x0 = static_cast<int>(floorf(x));
+    const int y0 = static_cast<int>(floorf(y));
+    const float dx = x - static_cast<float>(x0);
+    const float dy = y - static_cast<float>(y0);
+    const float v00 = static_cast<float>(image[y0 * width + x0]);
+    const float v01 = static_cast<float>(image[y0 * width + x0 + 1]);
+    const float v10 = static_cast<float>(image[(y0 + 1) * width + x0]);
+    const float v11 = static_cast<float>(image[(y0 + 1) * width + x0 + 1]);
+    const float top = v00 * (1.0F - dx) + v01 * dx;
+    const float bottom = v10 * (1.0F - dx) + v11 * dx;
+    return top * (1.0F - dy) + bottom * dy;
+}
+
+__device__ bool sampleColorNeighborhoodMax(const unsigned char* image,
+                                           int width,
+                                           int height,
+                                           int channel,
+                                           float x,
+                                           float y,
+                                           float& result)
+{
+    if (!isfinite(x) || !isfinite(y) || x < 0.0F || y < 0.0F ||
+        x >= static_cast<float>(width - 1) || y >= static_cast<float>(height - 1)) {
         return false;
     }
+    const int x0 = static_cast<int>(floorf(x));
+    const int y0 = static_cast<int>(floorf(y));
+    const float v00 = static_cast<float>(image[(y0 * width + x0) * 3 + channel]);
+    const float v01 = static_cast<float>(image[(y0 * width + x0 + 1) * 3 + channel]);
+    const float v10 = static_cast<float>(image[((y0 + 1) * width + x0) * 3 + channel]);
+    const float v11 = static_cast<float>(image[((y0 + 1) * width + x0 + 1) * 3 + channel]);
+    result = fmaxf(fmaxf(v00, v01), fmaxf(v10, v11));
+    return true;
+}
 
-    const float xr = (static_cast<float>(u) - cxNew) / fxNew;
-    const float yr = (static_cast<float>(v) - cyNew) / fyNew;
-    const float rz = calibration.rInv[6] * xr + calibration.rInv[7] * yr + calibration.rInv[8];
-    if (fabsf(rz) <= 1.0e-6F) {
-        return false;
+__device__ float smoothHighlightCompression(float value)
+{
+    constexpr float threshold = 230.0F;
+    constexpr float maximum = 250.0F;
+    constexpr float softness = 0.8F;
+    if (value <= threshold) {
+        return value;
     }
-    const float x = (calibration.rInv[0] * xr + calibration.rInv[1] * yr + calibration.rInv[2]) / rz;
-    const float y = (calibration.rInv[3] * xr + calibration.rInv[4] * yr + calibration.rInv[5]) / rz;
-
-    const float k1 = calibration.distCount > 0 ? calibration.dist[0] : 0.0F;
-    const float k2 = calibration.distCount > 1 ? calibration.dist[1] : 0.0F;
-    const float p1 = calibration.distCount > 2 ? calibration.dist[2] : 0.0F;
-    const float p2 = calibration.distCount > 3 ? calibration.dist[3] : 0.0F;
-    const float k3 = calibration.distCount > 4 ? calibration.dist[4] : 0.0F;
-    const float r2 = x * x + y * y;
-    const float r4 = r2 * r2;
-    const float r6 = r4 * r2;
-    const float radial = 1.0F + k1 * r2 + k2 * r4 + k3 * r6;
-    const float xDist = x * radial + 2.0F * p1 * x * y + p2 * (r2 + 2.0F * x * x);
-    const float yDist = y * radial + p1 * (r2 + 2.0F * y * y) + 2.0F * p2 * x * y;
-    srcX = calibration.k[0] * xDist + calibration.k[2];
-    srcY = calibration.k[4] * yDist + calibration.k[5];
-    return isfinite(srcX) && isfinite(srcY);
+    constexpr float maximumExcess = maximum - threshold;
+    const float ratio = fminf(1.0F, fmaxf(0.0F, (value - threshold) / maximumExcess));
+    const float smoothRatio = (1.0F - cosf(ratio * CUDART_PI_F)) * 0.5F;
+    return threshold + smoothRatio * maximumExcess * softness +
+        ratio * maximumExcess * (1.0F - softness);
 }
 
 __global__ void remapPhaseKernel(const float* input,
@@ -307,7 +304,8 @@ __global__ void remapCorrectColorKernel(const unsigned char* input,
                                         int height,
                                         RemapCalibration calibration,
                                         ColorCorrection correction,
-                                        int useRectification)
+                                        int useRectification,
+                                        int compressHighlights)
 {
     const int u = blockIdx.x * blockDim.x + threadIdx.x;
     const int v = blockIdx.y * blockDim.y + threadIdx.y;
@@ -324,10 +322,17 @@ __global__ void remapCorrectColorKernel(const unsigned char* input,
     if (useRectification != 0 && !rectifiedToRawPixel(u, v, calibration, srcX, srcY)) {
         return;
     }
-    const float b = sampleBilinearColor(input, width, height, 0, srcX, srcY);
-    const float g = sampleBilinearColor(input, width, height, 1, srcX, srcY);
-    const float r = sampleBilinearColor(input, width, height, 2, srcX, srcY);
-    const float features[4] = {b, g, r, 1.0F};
+    float samples[3] = {
+        sampleBilinearColor(input, width, height, 0, srcX, srcY),
+        sampleBilinearColor(input, width, height, 1, srcX, srcY),
+        sampleBilinearColor(input, width, height, 2, srcX, srcY)
+    };
+    if (compressHighlights != 0) {
+        for (float& sample : samples) {
+            sample = fminf(255.0F, fmaxf(0.0F, smoothHighlightCompression(sample)));
+        }
+    }
+    const float features[4] = {samples[0], samples[1], samples[2], 1.0F};
     for (int channel = 0; channel < 3; ++channel) {
         float corrected = 0.0F;
         for (int feature = 0; feature < 4; ++feature) {
@@ -339,6 +344,120 @@ __global__ void remapCorrectColorKernel(const unsigned char* input,
             powf(static_cast<float>(lutIndex) / 255.0F, correction.gamma) * 255.0F;
         output[idx * 3 + channel] =
             static_cast<unsigned char>(max(0, min(255, __float2int_rn(gammaCorrected))));
+    }
+}
+
+__global__ void computeRectifiedHighFrequencyQualityKernel(
+    const unsigned char* inputImages,
+    float* modulation,
+    unsigned char* lightFlags,
+    int width,
+    int height,
+    RemapCalibration calibration,
+    QualityPhaseWeights weights,
+    int useRectification)
+{
+    const int u = blockIdx.x * blockDim.x + threadIdx.x;
+    const int v = blockIdx.y * blockDim.y + threadIdx.y;
+    if (u >= width || v >= height) {
+        return;
+    }
+    const int idx = v * width + u;
+    float srcX = static_cast<float>(u);
+    float srcY = static_cast<float>(v);
+    if (useRectification != 0 && !rectifiedToRawPixel(u, v, calibration, srcX, srcY)) {
+        modulation[idx] = CUDART_NAN_F;
+        lightFlags[idx] = 4U;
+        return;
+    }
+
+    const int pixelCount = width * height;
+    float sinSum = 0.0F;
+    float cosSum = 0.0F;
+    unsigned char flags = 0U;
+    for (int step = 0; step < weights.stepCount; ++step) {
+        const float value = sampleBilinearGrayU8(
+            inputImages + step * pixelCount, width, height, srcX, srcY);
+        if (!isfinite(value)) {
+            flags |= 4U;
+            continue;
+        }
+        if (value >= 250.0F) {
+            flags |= 1U;
+        }
+        if (value <= 10.0F) {
+            flags |= 2U;
+        }
+        sinSum += value * weights.sinWeights[step];
+        cosSum += value * weights.cosWeights[step];
+    }
+    modulation[idx] = weights.stepCount > 1
+        ? 2.0F * sqrtf(sinSum * sinSum + cosSum * cosSum) /
+            static_cast<float>(weights.stepCount)
+        : CUDART_NAN_F;
+    lightFlags[idx] = flags;
+}
+
+__global__ void buildClear255MaskKernel(const unsigned char* input,
+                                        unsigned char* output,
+                                        int width,
+                                        int height,
+                                        RemapCalibration calibration,
+                                        int useRectification)
+{
+    const int u = blockIdx.x * blockDim.x + threadIdx.x;
+    const int v = blockIdx.y * blockDim.y + threadIdx.y;
+    if (u >= width || v >= height) {
+        return;
+    }
+    const int idx = v * width + u;
+    output[idx] = 255U;
+    float srcX = static_cast<float>(u);
+    float srcY = static_cast<float>(v);
+    if (useRectification != 0 && !rectifiedToRawPixel(u, v, calibration, srcX, srcY)) {
+        return;
+    }
+    float localMaximum = 0.0F;
+    if (sampleColorNeighborhoodMax(input, width, height, 0, srcX, srcY, localMaximum)) {
+        output[idx] = localMaximum >= 250.0F ? 0U : 255U;
+    }
+}
+
+__global__ void dilateInvalidMaskKernel(const unsigned char* input,
+                                        unsigned char* output,
+                                        int width,
+                                        int height,
+                                        int radius)
+{
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= width || y >= height) {
+        return;
+    }
+    unsigned char value = 255U;
+    for (int dy = -radius; dy <= radius && value != 0U; ++dy) {
+        const int yy = y + dy;
+        if (yy < 0 || yy >= height) {
+            continue;
+        }
+        for (int dx = -radius; dx <= radius; ++dx) {
+            const int xx = x + dx;
+            if (xx >= 0 && xx < width && input[yy * width + xx] == 0U) {
+                value = 0U;
+                break;
+            }
+        }
+    }
+    output[y * width + x] = value;
+}
+
+__global__ void countInvalidMaskKernel(const unsigned char* mask,
+                                       unsigned int* count,
+                                       int pixelCount)
+{
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < pixelCount && mask[idx] == 0U) {
+        atomicAdd(count, 1U);
     }
 }
 
@@ -473,6 +592,7 @@ __device__ bool rightPhaseMonotonicSupported(const float* rightPhaseRow,
 
 __global__ void computeDisparityKernel(const float* left,
                                        const float* right,
+                                       const unsigned char* validMask,
                                        float* disparity,
                                        float* scores,
                                        int* candidateCounts,
@@ -503,6 +623,9 @@ __global__ void computeDisparityKernel(const float* left,
     disparity[idx] = 0.0F;
     scores[idx] = threshold;
     candidateCounts[idx] = 0;
+    if (validMask != nullptr && validMask[idx] == 0U) {
+        return;
+    }
     const float leftPhase = left[idx];
     if (!isfinite(leftPhase) || fabsf(leftPhase) < 0.001F) {
         return;
@@ -913,21 +1036,26 @@ std::uint8_t readGrayPixel(const ImageView& image, int pixelIndex)
     return 0;
 }
 
-float computeHighFrequencyModulation(const StripeFrameGroup& frame,
-                                     const ReconsConfig& config,
-                                     int pixelIndex)
+struct HighFrequencyQualityPlan {
+    std::vector<const ImageView*> images;
+    std::vector<float> sinWeights;
+    std::vector<float> cosWeights;
+};
+
+HighFrequencyQualityPlan makeHighFrequencyQualityPlan(const StripeFrameGroup& frame,
+                                                      const ReconsConfig& config)
 {
+    HighFrequencyQualityPlan plan;
     if (config.stripeRequirements.empty()) {
-        return std::numeric_limits<float>::quiet_NaN();
+        return plan;
     }
     const StripeRequirement& highFrequency = config.stripeRequirements.back();
     if (highFrequency.requiredPhaseSteps <= 1) {
-        return std::numeric_limits<float>::quiet_NaN();
+        return plan;
     }
-
-    float sinSum = 0.0F;
-    float cosSum = 0.0F;
-    int foundSteps = 0;
+    plan.images.reserve(static_cast<std::size_t>(highFrequency.requiredPhaseSteps));
+    plan.sinWeights.reserve(static_cast<std::size_t>(highFrequency.requiredPhaseSteps));
+    plan.cosWeights.reserve(static_cast<std::size_t>(highFrequency.requiredPhaseSteps));
     for (int step = 0; step < highFrequency.requiredPhaseSteps; ++step) {
         const StripeImage* stripeForStep = nullptr;
         for (const StripeImage& stripe : frame.leftStripes) {
@@ -937,21 +1065,15 @@ float computeHighFrequencyModulation(const StripeFrameGroup& frame,
             }
         }
         if (stripeForStep == nullptr) {
-            return std::numeric_limits<float>::quiet_NaN();
+            return {};
         }
-        const float value = static_cast<float>(readGrayPixel(stripeForStep->image, pixelIndex));
         const float angle = 2.0F * CUDART_PI_F * static_cast<float>(step) /
                             static_cast<float>(highFrequency.requiredPhaseSteps);
-        sinSum += value * std::sin(angle);
-        cosSum += value * std::cos(angle);
-        ++foundSteps;
+        plan.images.push_back(&stripeForStep->image);
+        plan.sinWeights.push_back(std::sin(angle));
+        plan.cosWeights.push_back(std::cos(angle));
     }
-    if (foundSteps <= 1) {
-        return std::numeric_limits<float>::quiet_NaN();
-    }
-    const float sinCoeff = 2.0F * sinSum / static_cast<float>(foundSteps);
-    const float cosCoeff = 2.0F * cosSum / static_cast<float>(foundSteps);
-    return std::sqrt(sinCoeff * sinCoeff + cosCoeff * cosCoeff);
+    return plan;
 }
 
 void assignColor(const StripeFrameGroup& frame, int pixelIndex, PointCloudVertex& vertex)
@@ -970,12 +1092,57 @@ void assignColor(const StripeFrameGroup& frame, int pixelIndex, PointCloudVertex
 
 } // namespace
 
+struct PointCloudCudaWorkspace::Impl {
+    DeviceBuffer left;
+    DeviceBuffer right;
+    DeviceBuffer leftRectified;
+    DeviceBuffer rightRectified;
+    DeviceBuffer disparity;
+    DeviceBuffer disparityFiltered;
+    DeviceBuffer scores;
+    DeviceBuffer candidateCounts;
+    DeviceBuffer matchingRejectionCounts;
+    DeviceBuffer pointCounts;
+    DeviceBuffer q;
+    DeviceBuffer rawPoints;
+    DeviceBuffer smoothedPoints;
+    DeviceBuffer filteredPoints;
+    DeviceBuffer normals;
+    DeviceBuffer rawColor;
+    DeviceBuffer rectifiedColor;
+    DeviceBuffer clear255Mask;
+    DeviceBuffer clear255MaskScratch;
+    DeviceBuffer clear255RejectedCount;
+    DeviceBuffer qualityInputImages;
+    DeviceBuffer qualityModulation;
+    DeviceBuffer qualityLightFlags;
+};
+
+PointCloudCudaWorkspace::PointCloudCudaWorkspace()
+    : impl_(std::make_unique<Impl>())
+{
+}
+
+PointCloudCudaWorkspace::~PointCloudCudaWorkspace() = default;
+PointCloudCudaWorkspace::PointCloudCudaWorkspace(PointCloudCudaWorkspace&&) noexcept = default;
+PointCloudCudaWorkspace& PointCloudCudaWorkspace::operator=(PointCloudCudaWorkspace&&) noexcept = default;
+
+void PointCloudCudaWorkspace::reset() noexcept
+{
+    impl_.reset();
+}
+
 PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseResult& unwrappedPhase,
                                                          const CalibrationModel& calibration,
                                                          const ReconsConfig& config,
                                                          const StripeFrameGroup& frame,
+                                                         PointCloudCudaWorkspace& workspaceHandle,
                                                          const PointCloudOutputOptions& outputOptions)
 {
+    if (!workspaceHandle.impl_) {
+        workspaceHandle.impl_ = std::make_unique<PointCloudCudaWorkspace::Impl>();
+    }
+    PointCloudCudaWorkspace::Impl& workspace = *workspaceHandle.impl_;
     PointCloudReconstructionResult result;
     result.stats.stageName = "point_cloud_reconstruct_cuda";
     if (!unwrappedPhase.status.ok()) {
@@ -1023,8 +1190,17 @@ PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseRes
     const bool materializePointCloud = materializeVertices || materializeQualityGrid;
     const bool computeNormals = materializePointCloud;
     const bool materializeColor = materializeVertices && config.colorTextureEnabled;
+    const bool clear255Active = config.clear255 && frame.metalScan;
+    const bool needsAuxiliaryColor = materializeColor || clear255Active;
+    const HighFrequencyQualityPlan highFrequencyQualityPlan =
+        materializeQualityGrid && config.qualityInfoUseModulation
+        ? makeHighFrequencyQualityPlan(frame, config)
+        : HighFrequencyQualityPlan {};
+    const bool qualitySignalsActive =
+        highFrequencyQualityPlan.images.size() > 1U &&
+        highFrequencyQualityPlan.images.size() <= static_cast<std::size_t>(kMaxQualityPhaseSteps);
     const ImageView* colorInput = nullptr;
-    if (materializeColor) {
+    if (needsAuxiliaryColor) {
         colorInput = frame.leftColor.data != nullptr ? &frame.leftColor : &frame.color;
         if (colorInput->data == nullptr) {
             result.status = {StatusCode::InputMissing, "PointCloudReconstructorCuda", "color texture is enabled but left color input is missing"};
@@ -1055,28 +1231,45 @@ PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseRes
     double hostAllocationMs = 0.0;
     double deviceToHostMs = 0.0;
     double materializeMs = 0.0;
+    std::size_t deviceAllocationCount = 0U;
 
     auto timingStart = SteadyClock::now();
-    DeviceBuffer dLeft;
-    DeviceBuffer dRight;
-    DeviceBuffer dLeftRectified;
-    DeviceBuffer dRightRectified;
-    DeviceBuffer dDisparity;
-    DeviceBuffer dDisparityFiltered;
-    DeviceBuffer dScores;
-    DeviceBuffer dCandidateCounts;
-    DeviceBuffer dMatchingRejectionCounts;
-    DeviceBuffer dPointCounts;
-    DeviceBuffer dQ;
-    DeviceBuffer dRawPoints;
-    DeviceBuffer dSmoothedPoints;
-    DeviceBuffer dFilteredPoints;
-    DeviceBuffer dNormals;
-    DeviceBuffer dRawColor;
-    DeviceBuffer dRectifiedColor;
+    DeviceBuffer& dLeft = workspace.left;
+    DeviceBuffer& dRight = workspace.right;
+    DeviceBuffer& dLeftRectified = workspace.leftRectified;
+    DeviceBuffer& dRightRectified = workspace.rightRectified;
+    DeviceBuffer& dDisparity = workspace.disparity;
+    DeviceBuffer& dDisparityFiltered = workspace.disparityFiltered;
+    DeviceBuffer& dScores = workspace.scores;
+    DeviceBuffer& dCandidateCounts = workspace.candidateCounts;
+    DeviceBuffer& dMatchingRejectionCounts = workspace.matchingRejectionCounts;
+    DeviceBuffer& dPointCounts = workspace.pointCounts;
+    DeviceBuffer& dQ = workspace.q;
+    DeviceBuffer& dRawPoints = workspace.rawPoints;
+    DeviceBuffer& dSmoothedPoints = workspace.smoothedPoints;
+    DeviceBuffer& dFilteredPoints = workspace.filteredPoints;
+    DeviceBuffer& dNormals = workspace.normals;
+    DeviceBuffer& dRawColor = workspace.rawColor;
+    DeviceBuffer& dRectifiedColor = workspace.rectifiedColor;
+    DeviceBuffer& dClear255Mask = workspace.clear255Mask;
+    DeviceBuffer& dClear255MaskScratch = workspace.clear255MaskScratch;
+    DeviceBuffer& dClear255RejectedCount = workspace.clear255RejectedCount;
+    DeviceBuffer& dQualityInputImages = workspace.qualityInputImages;
+    DeviceBuffer& dQualityModulation = workspace.qualityModulation;
+    DeviceBuffer& dQualityLightFlags = workspace.qualityLightFlags;
     Status status;
+    auto ensureWorkspaceCapacity = [&](DeviceBuffer& buffer,
+                                       std::size_t bytes,
+                                       const char* operation) {
+        bool allocated = false;
+        Status capacityStatus = ensureCapacity(buffer, bytes, operation, &allocated);
+        if (allocated) {
+            ++deviceAllocationCount;
+        }
+        return capacityStatus;
+    };
     for (auto* buffer : {&dLeft, &dRight, &dLeftRectified, &dRightRectified, &dDisparity, &dDisparityFiltered, &dScores}) {
-        status = cudaStatus(cudaMalloc(&buffer->ptr, phaseBytes), "cudaMalloc phase/disparity buffer");
+        status = ensureWorkspaceCapacity(*buffer, phaseBytes, "cudaMalloc phase/disparity buffer");
         if (!status.ok()) {
             result.status = status;
             result.stats.status = status;
@@ -1084,7 +1277,7 @@ PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseRes
         }
     }
     for (auto* buffer : {&dRawPoints, &dFilteredPoints}) {
-        status = cudaStatus(cudaMalloc(&buffer->ptr, pointBytes), "cudaMalloc point buffer");
+        status = ensureWorkspaceCapacity(*buffer, pointBytes, "cudaMalloc point buffer");
         if (!status.ok()) {
             result.status = status;
             result.stats.status = status;
@@ -1092,7 +1285,7 @@ PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseRes
         }
     }
     if (config.pointCloudSmoothingEnabled) {
-        status = cudaStatus(cudaMalloc(&dSmoothedPoints.ptr, pointBytes), "cudaMalloc smoothed point buffer");
+        status = ensureWorkspaceCapacity(dSmoothedPoints, pointBytes, "cudaMalloc smoothed point buffer");
         if (!status.ok()) {
             result.status = status;
             result.stats.status = status;
@@ -1100,7 +1293,7 @@ PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseRes
         }
     }
     if (computeNormals) {
-        status = cudaStatus(cudaMalloc(&dNormals.ptr, pointBytes), "cudaMalloc normal buffer");
+        status = ensureWorkspaceCapacity(dNormals, pointBytes, "cudaMalloc normal buffer");
         if (!status.ok()) {
             result.status = status;
             result.stats.status = status;
@@ -1108,40 +1301,99 @@ PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseRes
         }
     }
     const std::size_t colorBytes = static_cast<std::size_t>(pixelCount) * 3;
-    if (materializeColor) {
-        status = cudaStatus(cudaMalloc(&dRawColor.ptr, colorBytes), "cudaMalloc raw color buffer");
-        if (!status.ok()) {
-            result.status = status;
-            result.stats.status = status;
-            return result;
-        }
-        status = cudaStatus(cudaMalloc(&dRectifiedColor.ptr, colorBytes), "cudaMalloc rectified color buffer");
+    if (needsAuxiliaryColor) {
+        status = ensureWorkspaceCapacity(dRawColor, colorBytes, "cudaMalloc raw color buffer");
         if (!status.ok()) {
             result.status = status;
             result.stats.status = status;
             return result;
         }
     }
-    status = cudaStatus(cudaMalloc(&dQ.ptr, sizeof(float) * 16), "cudaMalloc Q buffer");
+    if (materializeColor) {
+        status = ensureWorkspaceCapacity(dRectifiedColor, colorBytes, "cudaMalloc rectified color buffer");
+        if (!status.ok()) {
+            result.status = status;
+            result.stats.status = status;
+            return result;
+        }
+    }
+    if (clear255Active) {
+        const std::size_t maskBytes = static_cast<std::size_t>(pixelCount);
+        status = ensureWorkspaceCapacity(dClear255Mask, maskBytes, "cudaMalloc clear255 mask buffer");
+        if (!status.ok()) {
+            result.status = status;
+            result.stats.status = status;
+            return result;
+        }
+        if (config.clear255DilateRadius > 0) {
+            status = ensureWorkspaceCapacity(
+                dClear255MaskScratch, maskBytes, "cudaMalloc clear255 dilation buffer");
+            if (!status.ok()) {
+                result.status = status;
+                result.stats.status = status;
+                return result;
+            }
+        }
+        status = ensureWorkspaceCapacity(
+            dClear255RejectedCount, sizeof(unsigned int), "cudaMalloc clear255 rejection counter");
+        if (!status.ok()) {
+            result.status = status;
+            result.stats.status = status;
+            return result;
+        }
+        status = cudaStatus(cudaMemset(dClear255RejectedCount.ptr, 0, sizeof(unsigned int)),
+                            "cudaMemset clear255 rejection counter");
+        if (!status.ok()) {
+            result.status = status;
+            result.stats.status = status;
+            return result;
+        }
+    }
+    if (qualitySignalsActive) {
+        const std::size_t qualityImageBytes = static_cast<std::size_t>(pixelCount) *
+            highFrequencyQualityPlan.images.size();
+        status = ensureWorkspaceCapacity(
+            dQualityInputImages, qualityImageBytes, "cudaMalloc quality input images");
+        if (!status.ok()) {
+            result.status = status;
+            result.stats.status = status;
+            return result;
+        }
+        status = ensureWorkspaceCapacity(dQualityModulation, phaseBytes, "cudaMalloc quality modulation");
+        if (!status.ok()) {
+            result.status = status;
+            result.stats.status = status;
+            return result;
+        }
+        status = ensureWorkspaceCapacity(
+            dQualityLightFlags, static_cast<std::size_t>(pixelCount), "cudaMalloc quality light flags");
+        if (!status.ok()) {
+            result.status = status;
+            result.stats.status = status;
+            return result;
+        }
+    }
+    status = ensureWorkspaceCapacity(dQ, sizeof(float) * 16, "cudaMalloc Q buffer");
     if (!status.ok()) {
         result.status = status;
         result.stats.status = status;
         return result;
     }
-    status = cudaStatus(cudaMalloc(&dPointCounts.ptr, sizeof(unsigned int) * 3), "cudaMalloc point counters");
+    status = ensureWorkspaceCapacity(dPointCounts, sizeof(unsigned int) * 3, "cudaMalloc point counters");
     if (!status.ok()) {
         result.status = status;
         result.stats.status = status;
         return result;
     }
     const std::size_t candidateBytes = sizeof(int) * static_cast<std::size_t>(pixelCount);
-    status = cudaStatus(cudaMalloc(&dCandidateCounts.ptr, candidateBytes), "cudaMalloc candidate count buffer");
+    status = ensureWorkspaceCapacity(dCandidateCounts, candidateBytes, "cudaMalloc candidate count buffer");
     if (!status.ok()) {
         result.status = status;
         result.stats.status = status;
         return result;
     }
-    status = cudaStatus(cudaMalloc(&dMatchingRejectionCounts.ptr, sizeof(unsigned int) * 2), "cudaMalloc matching rejection counters");
+    status = ensureWorkspaceCapacity(
+        dMatchingRejectionCounts, sizeof(unsigned int) * 2, "cudaMalloc matching rejection counters");
     if (!status.ok()) {
         result.status = status;
         result.stats.status = status;
@@ -1184,7 +1436,7 @@ PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseRes
         result.stats.status = status;
         return result;
     }
-    if (materializeColor) {
+    if (needsAuxiliaryColor) {
         status = cudaStatus(cudaMemcpy2D(dRawColor.ptr,
                                         static_cast<std::size_t>(width) * 3,
                                         colorInput->data,
@@ -1197,6 +1449,35 @@ PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseRes
             result.status = status;
             result.stats.status = status;
             return result;
+        }
+    }
+    if (qualitySignalsActive) {
+        const std::size_t imageBytes = static_cast<std::size_t>(pixelCount);
+        for (std::size_t step = 0; step < highFrequencyQualityPlan.images.size(); ++step) {
+            const ImageView& image = *highFrequencyQualityPlan.images[step];
+            if (image.data == nullptr || image.width != width || image.height != height ||
+                image.channels != 1 || image.elementType != ImageElementType::UInt8 ||
+                image.strideBytes < width) {
+                result.status = {StatusCode::InputTypeUnsupported,
+                                 "PointCloudReconstructorCuda",
+                                 "quality modulation requires packed UInt8 high-frequency stripes"};
+                result.stats.status = result.status;
+                return result;
+            }
+            status = cudaStatus(cudaMemcpy2D(
+                                    static_cast<unsigned char*>(dQualityInputImages.ptr) + step * imageBytes,
+                                    static_cast<std::size_t>(width),
+                                    image.data,
+                                    static_cast<std::size_t>(image.strideBytes),
+                                    static_cast<std::size_t>(width),
+                                    static_cast<std::size_t>(height),
+                                    cudaMemcpyHostToDevice),
+                                "cudaMemcpy2D quality stripe H2D");
+            if (!status.ok()) {
+                result.status = status;
+                result.stats.status = status;
+                return result;
+            }
         }
     }
     hostToDeviceMs = elapsedMilliseconds(timingStart);
@@ -1217,22 +1498,49 @@ PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseRes
                                                                  calibration.rightDistortion,
                                                                  calibration.rectificationRight,
                                                                  calibration.projectionRight);
-        remapPhaseKernel<<<grid, block>>>(dLeft.as<const float>(), dLeftRectified.as<float>(), width, height, leftRemap);
-        status = cudaStatus(cudaGetLastError(), "remapPhaseKernel left launch");
+        // Production phase is already rectified before atan2/unwrap. Keep the
+        // old post-phase remap only for direct sensor-domain callers and tests.
+        if (unwrappedPhase.coordinateDomain == PhaseCoordinateDomain::Sensor) {
+            remapPhaseKernel<<<grid, block>>>(dLeft.as<const float>(), dLeftRectified.as<float>(), width, height, leftRemap);
+            status = cudaStatus(cudaGetLastError(), "remapPhaseKernel left launch");
+            if (!status.ok()) {
+                result.status = status;
+                result.stats.status = status;
+                return result;
+            }
+            remapPhaseKernel<<<grid, block>>>(dRight.as<const float>(), dRightRectified.as<float>(), width, height, rightRemap);
+            status = cudaStatus(cudaGetLastError(), "remapPhaseKernel right launch");
+            if (!status.ok()) {
+                result.status = status;
+                result.stats.status = status;
+                return result;
+            }
+            leftPhaseForMatching = dLeftRectified.as<const float>();
+            rightPhaseForMatching = dRightRectified.as<const float>();
+        }
+    }
+    if (qualitySignalsActive) {
+        QualityPhaseWeights weights;
+        weights.stepCount = static_cast<int>(highFrequencyQualityPlan.images.size());
+        for (int step = 0; step < weights.stepCount; ++step) {
+            weights.sinWeights[step] = highFrequencyQualityPlan.sinWeights[static_cast<std::size_t>(step)];
+            weights.cosWeights[step] = highFrequencyQualityPlan.cosWeights[static_cast<std::size_t>(step)];
+        }
+        computeRectifiedHighFrequencyQualityKernel<<<grid, block>>>(
+            dQualityInputImages.as<const unsigned char>(),
+            dQualityModulation.as<float>(),
+            dQualityLightFlags.as<unsigned char>(),
+            width,
+            height,
+            leftRemap,
+            weights,
+            rectificationAvailable ? 1 : 0);
+        status = cudaStatus(cudaGetLastError(), "computeRectifiedHighFrequencyQualityKernel launch");
         if (!status.ok()) {
             result.status = status;
             result.stats.status = status;
             return result;
         }
-        remapPhaseKernel<<<grid, block>>>(dRight.as<const float>(), dRightRectified.as<float>(), width, height, rightRemap);
-        status = cudaStatus(cudaGetLastError(), "remapPhaseKernel right launch");
-        if (!status.ok()) {
-            result.status = status;
-            result.stats.status = status;
-            return result;
-        }
-        leftPhaseForMatching = dLeftRectified.as<const float>();
-        rightPhaseForMatching = dRightRectified.as<const float>();
     }
     if (materializeColor) {
         ColorCorrection correction;
@@ -1246,8 +1554,50 @@ PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseRes
                                                  height,
                                                  leftRemap,
                                                  correction,
-                                                 rectificationAvailable ? 1 : 0);
+                                                 rectificationAvailable ? 1 : 0,
+                                                 config.colorHighlightCompressionEnabled && !frame.metalScan ? 1 : 0);
         status = cudaStatus(cudaGetLastError(), "remapCorrectColorKernel launch");
+        if (!status.ok()) {
+            result.status = status;
+            result.stats.status = status;
+            return result;
+        }
+    }
+
+    const unsigned char* validMaskForMatching = nullptr;
+    if (clear255Active) {
+        buildClear255MaskKernel<<<grid, block>>>(dRawColor.as<const unsigned char>(),
+                                                 dClear255Mask.as<unsigned char>(),
+                                                 width,
+                                                 height,
+                                                 leftRemap,
+                                                 rectificationAvailable ? 1 : 0);
+        status = cudaStatus(cudaGetLastError(), "buildClear255MaskKernel launch");
+        if (!status.ok()) {
+            result.status = status;
+            result.stats.status = status;
+            return result;
+        }
+        validMaskForMatching = dClear255Mask.as<const unsigned char>();
+        if (config.clear255DilateRadius > 0) {
+            dilateInvalidMaskKernel<<<grid, block>>>(dClear255Mask.as<const unsigned char>(),
+                                                     dClear255MaskScratch.as<unsigned char>(),
+                                                     width,
+                                                     height,
+                                                     config.clear255DilateRadius);
+            status = cudaStatus(cudaGetLastError(), "dilateInvalidMaskKernel launch");
+            if (!status.ok()) {
+                result.status = status;
+                result.stats.status = status;
+                return result;
+            }
+            validMaskForMatching = dClear255MaskScratch.as<const unsigned char>();
+        }
+        constexpr int maskCountBlockSize = 256;
+        const int maskCountGridSize = (pixelCount + maskCountBlockSize - 1) / maskCountBlockSize;
+        countInvalidMaskKernel<<<maskCountGridSize, maskCountBlockSize>>>(
+            validMaskForMatching, dClear255RejectedCount.as<unsigned int>(), pixelCount);
+        status = cudaStatus(cudaGetLastError(), "countInvalidMaskKernel launch");
         if (!status.ok()) {
             result.status = status;
             result.stats.status = status;
@@ -1258,6 +1608,7 @@ PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseRes
     const DisparityWindow disparityWindow = makeDisparityWindow(calibration, config, width);
     computeDisparityKernel<<<grid, block>>>(leftPhaseForMatching,
                                             rightPhaseForMatching,
+                                            validMaskForMatching,
                                             dDisparity.as<float>(),
                                             dScores.as<float>(),
                                             dCandidateCounts.as<int>(),
@@ -1383,6 +1734,9 @@ PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseRes
     std::vector<HostFloat3> normals;
     std::vector<float> matchScores;
     std::vector<int> candidateCounts;
+    std::vector<float> qualityModulation;
+    std::vector<unsigned char> qualityLightFlags;
+    std::vector<unsigned char> clear255Mask;
     std::vector<unsigned char> rectifiedColor;
     if (materializePointCloud) {
         filteredPoints.resize(static_cast<std::size_t>(pixelCount));
@@ -1391,6 +1745,13 @@ PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseRes
     if (materializeQualityGrid) {
         matchScores.resize(static_cast<std::size_t>(pixelCount));
         candidateCounts.resize(static_cast<std::size_t>(pixelCount));
+    }
+    if (qualitySignalsActive) {
+        qualityModulation.resize(static_cast<std::size_t>(pixelCount));
+        qualityLightFlags.resize(static_cast<std::size_t>(pixelCount));
+    }
+    if (materializeQualityGrid && clear255Active) {
+        clear255Mask.resize(static_cast<std::size_t>(pixelCount));
     }
     if (materializeColor) {
         rectifiedColor.resize(colorBytes);
@@ -1428,12 +1789,59 @@ PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseRes
             return result;
         }
     }
+    if (qualitySignalsActive) {
+        status = cudaStatus(cudaMemcpy(qualityModulation.data(),
+                                       dQualityModulation.ptr,
+                                       phaseBytes,
+                                       cudaMemcpyDeviceToHost),
+                            "cudaMemcpy quality modulation D2H");
+        if (!status.ok()) {
+            result.status = status;
+            result.stats.status = status;
+            return result;
+        }
+        status = cudaStatus(cudaMemcpy(qualityLightFlags.data(),
+                                       dQualityLightFlags.ptr,
+                                       qualityLightFlags.size(),
+                                       cudaMemcpyDeviceToHost),
+                            "cudaMemcpy quality light flags D2H");
+        if (!status.ok()) {
+            result.status = status;
+            result.stats.status = status;
+            return result;
+        }
+    }
+    if (!clear255Mask.empty()) {
+        status = cudaStatus(cudaMemcpy(clear255Mask.data(),
+                                       validMaskForMatching,
+                                       clear255Mask.size(),
+                                       cudaMemcpyDeviceToHost),
+                            "cudaMemcpy clear255 semantic mask D2H");
+        if (!status.ok()) {
+            result.status = status;
+            result.stats.status = status;
+            return result;
+        }
+    }
     if (materializeColor) {
         status = cudaStatus(cudaMemcpy(rectifiedColor.data(),
                                        dRectifiedColor.ptr,
                                        colorBytes,
                                        cudaMemcpyDeviceToHost),
                             "cudaMemcpy rectified color D2H");
+        if (!status.ok()) {
+            result.status = status;
+            result.stats.status = status;
+            return result;
+        }
+    }
+    unsigned int clear255RejectedCount = 0U;
+    if (clear255Active) {
+        status = cudaStatus(cudaMemcpy(&clear255RejectedCount,
+                                       dClear255RejectedCount.ptr,
+                                       sizeof(clear255RejectedCount),
+                                       cudaMemcpyDeviceToHost),
+                            "cudaMemcpy clear255 rejection counter D2H");
         if (!status.ok()) {
             result.status = status;
             result.stats.status = status;
@@ -1469,9 +1877,12 @@ PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseRes
     result.normalsComputed = computeNormals;
     result.leftRightRejectedPointCount = matchingRejectionCounts[0];
     result.rightPhaseMonotonicRejectedPointCount = matchingRejectionCounts[1];
+    result.clear255RejectedPixelCount = clear255RejectedCount;
+    result.semanticMaskApplied = clear255Active;
     result.matchingSummary =
         "matchingLeftRightRejected=" + std::to_string(result.leftRightRejectedPointCount) +
-        ",matchingRightPhaseMonotonicRejected=" + std::to_string(result.rightPhaseMonotonicRejectedPointCount);
+        ",matchingRightPhaseMonotonicRejected=" + std::to_string(result.rightPhaseMonotonicRejectedPointCount) +
+        ",clear255RejectedPixels=" + std::to_string(result.clear255RejectedPixelCount);
 
     if (materializeQualityGrid) {
         result.gridPoints.assign(static_cast<std::size_t>(pixelCount), {});
@@ -1489,8 +1900,16 @@ PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseRes
             gridPoint.ny = normals[idx].y;
             gridPoint.nz = normals[idx].z;
             gridPoint.matchCost = matchScores[idx];
-            gridPoint.modulation = computeHighFrequencyModulation(frame, config, static_cast<int>(idx));
             gridPoint.candidateCount = candidateCounts[idx];
+            gridPoint.semanticBackground = !clear255Mask.empty() && clear255Mask[idx] == 0U;
+            if (qualitySignalsActive) {
+                gridPoint.modulation = qualityModulation[idx];
+                gridPoint.highFrequencySaturated = (qualityLightFlags[idx] & 1U) != 0U;
+                gridPoint.highFrequencyLowLight = (qualityLightFlags[idx] & (2U | 4U)) != 0U;
+            } else {
+                gridPoint.modulation = std::numeric_limits<float>::quiet_NaN();
+                gridPoint.highFrequencyLowLight = true;
+            }
         }
         if (!isValidPoint(filteredPoints[idx])) {
             continue;
@@ -1523,11 +1942,16 @@ PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseRes
         "rawValid=" + std::to_string(result.rawValidPointCount) +
         ",smoothedValid=" + std::to_string(result.smoothedGridValidPointCount) +
         ",filteredValid=" + std::to_string(result.filteredGridValidPointCount) +
+        ",phaseDomain=" + std::string(
+            unwrappedPhase.coordinateDomain == PhaseCoordinateDomain::Rectified ? "rectified" : "sensor") +
         ",smoothingApplied=" + std::string(config.pointCloudSmoothingEnabled ? "true" : "false") +
         ",filterApplied=" + std::string(enableFilter != 0 ? "true" : "false") +
         ",colorTextureApplied=" + std::string(materializeColor ? "true" : "false") +
         ",verticesMaterialized=" + std::string(materializeVertices ? "true" : "false") +
         ",qualityGridMaterialized=" + std::string(materializeQualityGrid ? "true" : "false") +
+        ",clear255Active=" + std::string(clear255Active ? "true" : "false") +
+        ",clear255RejectedPixels=" + std::to_string(clear255RejectedCount) +
+        ",deviceAllocationCount=" + std::to_string(deviceAllocationCount) +
         ",deviceAllocationMs=" + std::to_string(deviceAllocationMs) +
         ",hostToDeviceMs=" + std::to_string(hostToDeviceMs) +
         ",kernelMs=" + std::to_string(kernelMs) +
@@ -1556,6 +1980,17 @@ PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseRes
     result.status = {};
     result.stats.status = {};
     return result;
+}
+
+PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseResult& unwrappedPhase,
+                                                         const CalibrationModel& calibration,
+                                                         const ReconsConfig& config,
+                                                         const StripeFrameGroup& frame,
+                                                         const PointCloudOutputOptions& outputOptions)
+{
+    PointCloudCudaWorkspace workspace;
+    return reconstructPointCloudCuda(
+        unwrappedPhase, calibration, config, frame, workspace, outputOptions);
 }
 
 } // namespace reconstruct_one_frame

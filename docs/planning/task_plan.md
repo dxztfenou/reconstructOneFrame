@@ -406,3 +406,170 @@
 | count-only 首次编译时条件分配分支引用了声明前的 `status` | 将 `Status status` 提前到统一分配区；该次构建失败后运行的是旧二进制，相关输出不计入优化结果 |
 | wrapped modulation reduction 首次编译找不到 `CUDART_INF_F` | 补充 CUDA `math_constants.h`，未运行失败构建产物 |
 | 首次按假定路径查找 Legacy `build\Release` 可执行文件失败 | 通过递归定位确认实际路径为 `build\bin\Release\TeethScanAlgorithmApp.exe`，未修改 Legacy |
+
+## 2026-07-13 Res1F 与 DSSI 跨仓库架构审计
+
+| 阶段 | 状态 | 内容 |
+|---|---|---|
+| 76 | complete | 读取两仓库约束、当前代码、构建边界和近期提交，建立事实数据流 |
+| 77 | complete | 明确审计目标、重构激进程度和兼容迁移约束 |
+| 78 | complete | 比较渐进修补、反腐层迁移、稳定 ABI 平台化三条路线 |
+| 79 | complete | 形成目标架构、组件职责、数据流、错误模型和验证策略建议 |
+| 80 | complete | 将完整评估与推荐重构方案写入 `docs` Markdown 文档 |
+| 81 | complete | 自检事实引用、占位符、矛盾、范围、迁移顺序和可验证性 |
+| 82 | complete | 交付文档并等待用户评审；本轮不修改算法或 DSSI 生产代码 |
+
+## 本轮审计边界
+
+- 主审计对象为 `D:\code\reconstructOneFrame` 当前 `main@1accb19` 与下游 `D:\code\_worktrees\dssi-adapt-res1f` 的真实适配代码。
+- 既有 `threeScan_*` shim、`cv::Mat` 跨 DLL ABI、CUDA/OpenCV 运行时加载和标定 JSON 切换均作为当前事实评估，不预设为最终合理设计。
+- 允许提出破坏式目标架构，但必须同时给出可执行的分阶段迁移、回滚边界和下游验收门禁。
+- 不修改业务代码、不提交、不推送；保留当前未跟踪 `output/` 与 `scripts/__pycache__/`。
+- 用户已明确要求大胆提出重构方案，因此本轮可自主给出推荐路线；这不代表用户已批准后续实现，文档交付后仍需评审。
+
+## 本轮路线决策
+
+- 不把继续修补 `threeScan_*` 作为目标架构，只允许它承担短期迁移和回滚。
+- 推荐“DSSI Provider 反腐层 + 版本化稳定 C ABI + Res1F session-owned CUDA execution plan”。
+- 进程外 reconstruction worker 只作为需要更强崩溃/GPU 隔离时的后续演进，不在第一轮引入 IPC 复杂度。
+
+## 本轮审计错误记录
+
+| 错误 | 处理 |
+|---|---|
+| 首次三文件规划补丁假定 `findings.md` 存在“DSSI 标定路径切换”标题，校验失败 | 补丁整体未应用；读取三个文件真实末尾后分别追加 |
+
+## 2026-07-13 架构重构 Phase 0/1 实施
+
+| 阶段 | 状态 | 内容 |
+|---|---|---|
+| 83 | complete | 根据已批准架构文档拆分 Phase 0/1 跨仓库实施范围 |
+| 84 | complete | 写入稳定 C ABI 与 DSSI Provider 实施计划 |
+| 85 | complete | 实现并测试 `rof_get_api`、opaque session、capture plan 和 caller-owned outputs |
+| 86 | complete | 用稳定 ABI 重写 `threeScan_*` 兼容 shim并拆分 `rofCore`，关闭实现符号自动导出 |
+| 87 | complete | 在 DSSI 提取 Provider Host 并保留 Legacy rollback provider |
+| 88 | complete | 接入 ScanService ready 门禁与 SLAM fail-closed 启动 |
+| 89 | complete | 增加 DSSI contract test，并完成阶段性两仓库 Release 验证 |
+| 90 | complete | 逐项复核架构文档 Phase 0-5 与验收门禁，继续实施仍必要的 Phase 2-4 工作 |
+
+## Phase 0/1 实施边界
+
+- 本批只改变 ABI、provider ownership 和启动失败传播，不改变 CUDA 数值算法、坐标结果或 DSSI worker 拓扑。
+- Res1F 因当前工作区包含本轮设计/规划文档而原地实施；DSSI 使用现有 linked worktree `D:\code\_worktrees\dssi-adapt-res1f`。
+- 现有 Legacy `threeScan_*` 保留为迁移/回滚接口，但 Res1F shim 改为委托新 C ABI。
+- 不自动提交或推送；保留 `output/`、`scripts/__pycache__/` 和下游运行目录。
+
+## Phase 0/1 实施错误记录
+
+| 错误 | 处理 |
+|---|---|
+| 更新导出策略时把计划复选框误放进 shim 文件补丁上下文，`apply_patch` 校验失败 | 补丁整体未应用；拆为 CMake、shim、计划三个精确更新 |
+| 关闭 `WINDOWS_EXPORT_ALL_SYMBOLS` 后全量构建出现跨 config/I/O/CUDA/quality 的 `LNK2019` | 证实样例和内部测试错误依赖 DLL 实现导出；拆分 `rofCore` 静态核心，插件 DLL 仅编译两个 ABI adapter |
+| 首次并行导出检查把 `${env:ProgramFiles(x86)}` 写进单引号字符串，导致 `dumpbin` 定位失败 | 分开重跑 CTest，并使用已验证的 VS 2022 `dumpbin.exe` 绝对路径完成 9 个导出检查 |
+
+## 2026-07-13 架构规划收口与指定数据性能大比拼
+
+| 阶段 | 状态 | 内容 |
+|---|---|---|
+| 91 | complete | 对照架构文档 Phase 0-5、验收门禁和当前两仓库差异，确认仍需实施项 |
+| 92 | complete | 完成必要且可在本轮闭环的 Phase 2-4 重构，并消除新增构建警告 |
+| 93 | complete | 验证 session CUDA workspace warmup 后分配计数和两仓库 Release 测试 |
+| 94 | complete | 使用指定 SourceImg 与 JSON 标定完成 Res1F `0..294` 两轮全量 replay |
+| 95 | complete | 用同会话指定 YAML 标定完成 Legacy `0..294` 两轮全量 benchmark和 non-metal 控制组 |
+| 96 | complete | 更新架构实施状态和 benchmark 报告，执行最终补丁与产物审计 |
+
+## 本轮边界
+
+- Res1F 只读取用户指定目录中的 `calibResult.json`；Legacy 因其接口限制使用同目录 `calibParams.yml`，必须在日志中确认绝对路径命中。
+- 性能比较使用同一 `Upper/0..294/SourceImg` 原始帧；排除首帧 warmup，同时报告加载、算法、wall、成功率和点数。
+- 不修改 Legacy 算法；只生成独立 benchmark 配置和输出，不改 DSSI runtime 原配置。
+- 不提交、不推送；保留 `output/` 和 `scripts/__pycache__/`。
+
+## 本轮错误记录
+
+| 错误 | 处理 |
+|---|---|
+| 无参运行 `reconstruction_provider_replay.exe` 返回 usage 和退出码 1，中止并行信息读取 | 改为直接读取工具参数解析源码；后续按完整 8 个参数调用 |
+| 首次同步规划补丁因 `findings.md` 末尾上下文与截断输出不一致而整体失败 | 拆分为按文件真实末尾应用的精确补丁，未产生半写状态 |
+| Legacy 首次 smoke 从 DSSI Release 配置目录解析相对 `calibParamsPath`，实际加载了错误 YAML | 该结果作废；追踪配置解析后生成写入目标 YAML 绝对路径的独立 benchmark 配置，并要求日志精确命中 |
+| 派生 JSON 已正确写入绝对 YAML，但 Legacy provider 仍从 Res1F 当前目录读取配置 | 定位为旧 `threeScan_init` ABI 不接受 config；为 benchmark 建立隔离 `legacy_runtime/config/reconsAlgPara.json` 工作目录，并用 Legacy App 日志验证命中 |
+| 第一轮全量先跑 Res1F，Windows 文件缓存导致两路 `loadMs` 明显不可比 | 增加 `ProviderOrder`，执行 Legacy-first 反向全量轮次；算法耗时按两轮报告，I/O/wall 明确标注次序 |
+| 新 ABI layout test 首次把 `RofCameraModelV1` 大小手算为 168，MSVC static_assert 失败 | 按字段和 8 字节对齐复核为 160；只修正测试期望，不改 ABI |
+
+## 2026-07-13 Legacy `46375a0e` 能力差异审计与移植
+
+| 阶段 | 状态 | 内容 |
+|---|---|---|
+| 97 | complete | 按双亲语义审查 merge commit，提取最终树相对 `27613a3` 的功能增量 |
+| 98 | complete | 对照 Res1F 配置、CUDA 数据流、诊断和错误模型，划分已实现/应移植/不移植项 |
+| 99 | complete | 形成最小移植设计与验收口径并获得用户确认 |
+| 100 | complete | 实现 ABI mode flags、clear255、高光压缩、质量对齐及下游转发 |
+| 101 | complete | 执行 Release 构建、CTest、479 帧双顺序 benchmark、消融和补丁审计 |
+
+## 本轮边界
+
+- `46375a0e` 是 merge commit；以当前 Legacy `27613a3` 为第二父，审查 `27613a3..46375a0e`，不把 feature 分支自身内容重复算作新增。
+- 不 cherry-pick Legacy 提交，不复制 Legacy 的 PCL/OpenCV/C++ DLL 架构；只移植可解释的算法行为和配置契约。
+- 默认关闭的实验/诊断能力必须有当前使用证据才移植；默认开启且影响生产结果的能力优先。
+- 继续保留 Res1F、DSSI 现有未提交工作，不修改 Legacy 工作树，不提交、不推送。
+
+## 候选设计
+
+- 推荐：ABI 1.2 在 `RofFrameInputV1` 尾部追加 frame flags，并保留 1.1 结构前缀兼容；DSSI 转发 metal/AI mode，Res1F 声明 metal capability，AI 未实现时 fail closed。
+- 推荐：从左相机三张辅助帧构造 raw BGR；颜色高光压缩在 rectification 双线性采样后、颜色矩阵和 gamma 前执行。
+- 推荐：`clear255` 从第一张左辅助帧的四邻域局部最大值生成 rectified 0/255 mask，使用 session-owned CUDA mask/scratch buffer 膨胀，并在 disparity kernel 入口 gate。
+- 次选：复刻 Legacy 的 `cv::Mat` mask 和 D2H/H2D 流程，改动较小但违反当前 session workspace 与 steady-state allocation 目标。
+- 不采用：把 `clear255` 当最终纹理后处理，或只增加 JSON key 而继续忽略 metal mode；两者都无法得到 Legacy 的点云拒绝语义。
+
+## 验收口径
+
+- ABI 1.1 caller 仍可传 136-byte `RofFrameInputV1`，默认 non-metal；ABI 1.2 caller 可显式传 metal/AI flags。
+- 合成 CUDA 测试覆盖阈值 `249/250`、膨胀半径、metal/non-metal 隔离和高光压缩公式。
+- production JSON 显式启用 `clear255=true`、`clear255DilateRadius=3`、`colorHighlightCompressionEnabled=true`，缺 key 的旧配置保持兼容默认。
+- Release 全量构建、Res1F CTest、DSSI contract test、DLL 动态契约、指定真实数据四组消融均通过；warmup 后新增 mask buffer 不产生逐帧 device allocation。
+
+## 2026-07-13 Res1F 标定输入 JSON-only 收口
+
+| 阶段 | 状态 | 内容 |
+|---|---|---|
+| 102 | complete | 审计 Res1F 标定解析入口、默认配置、测试、仓库 YAML 文件和 Legacy benchmark 引用 |
+| 103 | complete | 先补 JSON-only 拒绝回归测试，再删除 YAML 内容回退和扩展名兼容 |
+| 104 | complete | 将 production 默认配置收敛为 `calibResultPath=calibResult.json`，同步当前设计契约 |
+| 105 | complete | 执行 Res1F Release 全量构建/CTest、DSSI contract test、YAML 边界和补丁终审 |
+
+## JSON-only 边界
+
+- Res1F 标定模型只接受 JSON object 内容；`.yml`/`.yaml` 路径即使内容是 JSON 也明确拒绝，YAML 内容即使伪装成 `.json` 也明确拒绝。
+- Legacy benchmark 脚本、历史 benchmark 报告和隔离 Legacy runtime 继续显式消费 `calibParams.yml`，不属于 Res1F 输入能力。
+- 仓库中唯一非 Legacy 的 YAML 文件是 CMake 自动生成的 `build/CMakeFiles/CMakeConfigureLog.yaml`；它不是应用输入且会由 CMake 重建，不作为标定资产删除。
+
+## JSON-only 错误记录
+
+| 错误 | 处理 |
+|---|---|
+| Windows 下把 `README*` 作为 `rg` 位置参数导致路径语法错误 | 改用 `--glob 'README*'`；命令未写文件，已用窄范围搜索继续审计 |
+| DSSI 构建使用旧称 `ReconstructionProviderContractTest`，MSBuild 找不到项目 | 从当前 `add_executable` 和 CTest 清单确认真实 target 为小写 `reconstruction_provider_contract_test`，使用真实名称重跑成功；无需改源码 |
+
+## 2026-07-13 07131838 大比拼重大缺陷复核
+
+| 阶段 | 状态 | 内容 |
+|---|---|---|
+| 106 | complete | 核验原始 benchmark 产物与跨轮确定性，剔除后台 SLAM 对耗时的污染 |
+| 107 | complete | 按帧定位点数、质量和 reason 最大差异，排除输入/标定/统计口径问题 |
+| 108 | complete | 对照最新 Legacy `46375a0e` 与 Res1F 数据流确认根因 |
+| 109 | complete | 建立 phase domain/rectified sampling/double-remap 红绿测试并完成最小修复 |
+| 110 | complete | 执行 Release、DSSI、三帧及 479 帧 metal/non-metal 验证并更新结论 |
+
+## 本轮判定边界
+
+- 后台 SLAM 会污染 GPU/CPU 耗时，因此本轮不使用 p50/p90/p99 排名判定重大缺陷。
+- 点数、status、质量 sentinel 和 reason 分布若跨反向顺序轮次稳定，仍可作为算法结果证据。
+- 只有确认是 Res1F 实现错误且存在可验证的最小修复时才改代码；单纯与 Legacy 策略不同不直接视为 bug。
+
+## 本轮错误记录
+
+| 错误 | 处理 |
+|---|---|
+| 配置差异 PowerShell 把 `foreach` 结果直接接空管道，触发 `ParserError: An empty pipe element is not allowed` | 命令在解析阶段停止且未写文件；改为先赋值 `$diffs` 再格式化，并拆分只读查询 |
+| 聚焦配置查询又重复 `foreach {...} | Format-Table` 空管道错误（第 2 次） | 停止该写法，统一使用显式 `$rows=@()` 收集后再输出；源码读取与配置查询彻底分开 |
+| 注释与计划状态合并补丁因复选框上下文不一致而拒绝 | 补丁整体未应用；拆成源码/测试与计划状态两个精确补丁 |

@@ -3,11 +3,13 @@
 > 日期：2026-07-09
 > 项目：`D:\code\reconstructOneFrame`
 > 阶段定位：在第四阶段真实数据 CUDA absolute phase 后，进入 CUDA disparity/reproject 点云重建，并与历史 Legacy `depth_points.ply` 做脚本化对比。
+>
+> 当前契约（2026-07-13）：本文件保留阶段历史结论，但当时加入的 Res1F YAML 兼容已经撤销。当前 Res1F 只读取 `calibResult.json`；`calibParams.yml` 只允许由外部 Legacy runtime 消费。
 
 ## 1. 目标
 
 - 使用真实数据 `D:\Data\Calib\2607011016_mach6\singleStripe`，不退回 synthetic 或 CPU-only。
-- 支持真实 `D:\Data\Calib\2607011016_mach6\calibResult.json` 与 Legacy `D:\Data\Calib\2607011016_mach6\calibParams.yml` 的 OpenCV matrix 读取；最终贴近 Legacy 的基线采用 `calibParams.yml`。
+- 支持真实 `D:\Data\Calib\2607011016_mach6\calibResult.json` 的 OpenCV matrix object 读取；Legacy 对比工具继续独立读取 `calibParams.yml`。
 - 保留 `phaseStepCounts=[3,5,5]` 的每频率独立相移步数契约。
 - 将 pipeline 从 `phase_unwrap_cuda` 推进到 `point_cloud_reconstruct_cuda`。
 - 输出 `depth_points.ply`，并支持 `--compare-legacy <ply>` 对比历史 Legacy 输出。
@@ -37,7 +39,6 @@ cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 build\Release\reconstructSample.exe --config D:\Data\Calib\2607011016_mach6\singleStripe\output\run_config.json --calib D:\Data\Calib\2607011016_mach6\calibResult.json --single-stripe-root D:\Data\Calib\2607011016_mach6\singleStripe --group 1 --output build\phase5\group1 --compare-legacy D:\Data\Calib\2607011016_mach6\singleStripe\output\1\depth_points.ply
-build\Release\reconstructSample.exe --config D:\Data\Calib\2607011016_mach6\singleStripe\output\run_config.json --calib D:\Data\Calib\2607011016_mach6\calibParams.yml --single-stripe-root D:\Data\Calib\2607011016_mach6\singleStripe --group 1 --output build\phase5\group1_calibparams_yml --compare-legacy D:\Data\Calib\2607011016_mach6\singleStripe\output\1\depth_points.ply
 ```
 
 ## 5. 验收口径
@@ -52,13 +53,13 @@ build\Release\reconstructSample.exe --config D:\Data\Calib\2607011016_mach6\sing
 
 - Release build 通过。
 - CTest 通过，11/11 tests passed。
-- 真实 group 1 已输出 `build\phase5\group1_calibparams_yml\depth_points.ply`。
+- 历史阶段曾用 YAML 兼容路径输出 `build\phase5\group1_calibparams_yml\depth_points.ply`；该输入能力现已撤销，目录名只作为历史产物标识保留。
 - 与 Legacy `D:\Data\Calib\2607011016_mach6\singleStripe\output\1\depth_points.ply` 对比：generated `96160` 点，legacy `101528` 点，点数差 `-5368`。
 - 最近邻误差：mean `0.0535mm`，RMS `0.0626mm`，P95 `0.1029mm`。
-- 主要修正：加入 rectification/remap 近似、默认关闭会显著改变点数的点云 smoothing/filter，并支持直接读取 Legacy `calibParams.yml`。
+- 主要修正：加入 rectification/remap 近似、默认关闭会显著改变点数的点云 smoothing/filter；当时加入的 Legacy YAML 直读后来按 JSON-only 契约删除。
 
 ## 7. 遗留风险
 
 - 当前 remap 在 absolute phase 后做近似，而 Legacy 是强度图 remap 后再算相位；最近邻几何已贴近，但无法保证逐点完全一致。
-- `calibResult.json` 可以运行但不如 `calibParams.yml` 贴近历史 Legacy 输出，说明历史基线实际更接近 `calibParams.yml` 的矩阵集合。
+- 历史基线的矩阵集合更接近 `calibParams.yml`；该文件现在只用于 Legacy 自身对比，不能再传给 Res1F。
 - 当前颜色来自左侧条纹图灰度填充，不等价于 Legacy 的完整 RGB/纹理来源。

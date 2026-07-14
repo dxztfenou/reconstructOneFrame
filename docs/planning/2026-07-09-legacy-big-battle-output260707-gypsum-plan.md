@@ -1,5 +1,7 @@
 # Legacy 大比拼：output260707 gypsum 实施计划
 
+> 当前契约（2026-07-13）：下列 Res1F 命令使用 `calibResult.json`；YAML 标定只由 Legacy runtime 消费。结果摘要保留当时历史运行数据。
+
 ## 目标
 
 使用 `D:\Data\output260707_gypsum\Upper\<frame>\SourceImg` 真实输入，与同目录 Legacy `0.exr` 输出进行点数和效率对比。
@@ -47,8 +49,8 @@
 ```powershell
 cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
-build\Release\reconstructSample.exe --config D:\Data\Calib\2607011016_mach6\singleStripe\output\run_config.json --calib D:\Data\Calib\2607011016_mach6\calibParams.yml --source-img-root D:\Data\output260707_gypsum\Upper --frame 100
+build\Release\reconstructSample.exe --config D:\Data\Calib\2607011016_mach6\singleStripe\output\run_config.json --calib D:\Data\Calib\2607011016_mach6\calibResult.json --source-img-root D:\Data\output260707_gypsum\Upper --frame 100
 python scripts\benchmark_output260707_gypsum.py --frames 100,200,300,400
 python scripts\benchmark_output260707_gypsum.py --frames 0:465 --output build\big_battle_output260707_gypsum_full
-build\Release\reconstructSample.exe --config D:\Data\Calib\2607011016_mach6\singleStripe\output\run_config.json --calib D:\Data\Calib\2607011016_mach6\calibParams.yml --source-img-root D:\Data\output260707_gypsum\Upper --first 100 --last 104
+build\Release\reconstructSample.exe --config D:\Data\Calib\2607011016_mach6\singleStripe\output\run_config.json --calib D:\Data\Calib\2607011016_mach6\calibResult.json --source-img-root D:\Data\output260707_gypsum\Upper --first 100 --last 104
 ```
