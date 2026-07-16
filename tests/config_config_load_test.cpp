@@ -48,8 +48,17 @@ int main()
     require(config.matchingRightPhaseMonotonicEnabled, "expected right-phase monotonicity enabled");
     require(config.matchingRightPhaseMonotonicRadius == 1, "expected right-phase monotonic radius");
     require(config.matchingRightPhaseMinSlope == 0.0001, "expected right-phase minimum slope");
+    require(!config.matchingRejectOnSubpixelFailure, "expected subpixel-failure reject disabled by default");
+    require(!config.matchingCandidateQualityFilterEnabled,
+            "expected matching candidate quality filter disabled by default");
+    require(config.matchingCandidateMinModulation == 8.0,
+            "expected matching candidate modulation threshold from config");
+    require(config.matchingCandidateRejectSaturation,
+            "expected matching candidate saturation rejection flag from config");
+    require(config.matchingCandidateRejectLowLight,
+            "expected matching candidate low-light rejection flag from config");
     require(config.disparitySubpixelEnabled, "expected disparity subpixel interpolation enabled");
-    require(!config.pointCloudSmoothingEnabled, "expected production smoothing to remain disabled until real-data validation");
+    require(config.pointCloudSmoothingEnabled, "expected production smoothing to mirror Legacy final point-cloud blur");
     require(config.pointCloudFilterEnabled, "expected production point-cloud filter enabled");
     require(config.colorTextureEnabled, "expected production color texture enabled");
     require(config.colorTextureProjectorIndices == std::vector<int>({16, 17, 18}), "expected BGR auxiliary projector indices");
@@ -59,6 +68,11 @@ int main()
     require(config.clear255DilateRadius == 3, "expected production clear255 radius");
     require(config.colorHighlightCompressionEnabled,
             "expected production non-metal highlight compression enabled");
+    require(!config.phaseDiagnosticsEnabled, "expected phase diagnostics disabled by default");
+    require(!config.matchingDiagnosticsEnabled, "expected matching diagnostics disabled by default");
+    require(!config.pointCloudStageDiagnosticsEnabled,
+            "expected point-cloud stage diagnostics disabled by default");
+    require(!config.saveStagePointClouds, "expected legacy stage point-cloud alias disabled by default");
 
     const auto legacyCompatiblePath = std::filesystem::temp_directory_path() / "rof_legacy_compatible_config.json";
     {
@@ -75,6 +89,12 @@ int main()
     require(!legacyCompatible.disparityWindowEnabled, "expected missing disparity window key to remain disabled");
     require(!legacyCompatible.matchingLeftRightConsistencyEnabled, "expected missing left-right key to remain disabled");
     require(!legacyCompatible.matchingRightPhaseMonotonicEnabled, "expected missing monotonic key to remain disabled");
+    require(!legacyCompatible.matchingRejectOnSubpixelFailure,
+            "expected missing subpixel-failure reject key to remain disabled");
+    require(!legacyCompatible.matchingCandidateQualityFilterEnabled,
+            "expected missing candidate-quality key to remain disabled");
+    require(legacyCompatible.matchingCandidateMinModulation == 8.0,
+            "expected compatible matching candidate modulation default");
     require(!legacyCompatible.disparitySubpixelEnabled, "expected missing subpixel key to remain disabled");
     require(!legacyCompatible.pointCloudSmoothingEnabled, "expected missing smoothing key to remain disabled");
     require(!legacyCompatible.pointCloudFilterEnabled, "expected missing point-cloud filter key to remain disabled");
@@ -83,6 +103,12 @@ int main()
     require(legacyCompatible.clear255DilateRadius == 3, "expected compatible clear255 radius default");
     require(!legacyCompatible.colorHighlightCompressionEnabled,
             "expected missing highlight compression key to remain disabled");
+    require(!legacyCompatible.phaseDiagnosticsEnabled,
+            "expected missing phase diagnostics key to remain disabled");
+    require(!legacyCompatible.matchingDiagnosticsEnabled,
+            "expected missing matching diagnostics key to remain disabled");
+    require(!legacyCompatible.pointCloudStageDiagnosticsEnabled,
+            "expected missing point-cloud diagnostics key to remain disabled");
     require(!noBaseCompatible.pointCloudFilterEnabled, "expected no-base overlay to preserve missing filter default");
     require(!noBaseCompatible.colorTextureEnabled, "expected no-base overlay to preserve missing color default");
 
@@ -100,6 +126,43 @@ int main()
     require(overlaid.colorTextureEnabled, "expected base color texture to survive missing override key");
     require(overlaid.qualityInfoEnabled, "expected explicit override key to replace base quality flag");
     require(overlaid.disparitySubpixelEnabled, "expected base subpixel flag to survive missing override key");
+
+    const auto diagnosticsPath = std::filesystem::temp_directory_path() / "rof_diagnostics_config.json";
+    {
+        std::ofstream out(diagnosticsPath);
+        out << R"({"phaseDiagnosticsEnabled":true,"matchingDiagnosticsEnabled":true,"pointCloudStageDiagnosticsEnabled":true,"saveStagePointClouds":true})";
+    }
+    ReconsConfig diagnosticsConfig;
+    status = loadReconsConfig(diagnosticsPath.string(), diagnosticsConfig);
+    std::filesystem::remove(diagnosticsPath);
+    require(status.ok(), "expected diagnostics config to load");
+    require(diagnosticsConfig.phaseDiagnosticsEnabled, "expected phase diagnostics parse true");
+    require(diagnosticsConfig.matchingDiagnosticsEnabled, "expected matching diagnostics parse true");
+    require(diagnosticsConfig.pointCloudStageDiagnosticsEnabled,
+            "expected point-cloud stage diagnostics parse true");
+    require(diagnosticsConfig.saveStagePointClouds,
+            "expected legacy saveStagePointClouds alias to keep parsing true");
+
+    const auto matchingConstraintPath =
+        std::filesystem::temp_directory_path() / "rof_matching_constraints_config.json";
+    {
+        std::ofstream out(matchingConstraintPath);
+        out << R"({"matchingRejectOnSubpixelFailure":true,"matchingCandidateQualityFilterEnabled":true,"matchingCandidateMinModulation":12.5,"matchingCandidateRejectSaturation":false,"matchingCandidateRejectLowLight":false})";
+    }
+    ReconsConfig matchingConstraintConfig;
+    status = loadReconsConfig(matchingConstraintPath.string(), matchingConstraintConfig);
+    std::filesystem::remove(matchingConstraintPath);
+    require(status.ok(), "expected matching constraint config to load");
+    require(matchingConstraintConfig.matchingRejectOnSubpixelFailure,
+            "expected subpixel-failure reject parse true");
+    require(matchingConstraintConfig.matchingCandidateQualityFilterEnabled,
+            "expected matching candidate quality parse true");
+    require(matchingConstraintConfig.matchingCandidateMinModulation == 12.5,
+            "expected matching candidate modulation override");
+    require(!matchingConstraintConfig.matchingCandidateRejectSaturation,
+            "expected matching candidate saturation override false");
+    require(!matchingConstraintConfig.matchingCandidateRejectLowLight,
+            "expected matching candidate low-light override false");
 
     ReconsConfig missingBase;
     status = loadReconsConfigWithBase("config/does_not_exist.json", "config/reconsAlgPara.json", missingBase);

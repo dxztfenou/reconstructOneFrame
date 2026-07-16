@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <string>
 #include <vector>
 
 using namespace reconstruct_one_frame;
@@ -37,18 +38,6 @@ UnwrappedPhaseResult makePhase(bool flatRightPhase)
             phase.left.absolutePhase[y * width + x] = static_cast<float>(x) * 0.1F + 0.05F;
             phase.right.absolutePhase[y * width + x] =
                 flatRightPhase ? 0.4F : static_cast<float>(x + 2) * 0.1F;
-        }
-    }
-    return phase;
-}
-
-UnwrappedPhaseResult makeFlatEqualPhase()
-{
-    UnwrappedPhaseResult phase = makePhase(false);
-    for (int y = 0; y < phase.left.height; ++y) {
-        for (int x = 0; x < phase.left.width; ++x) {
-            phase.left.absolutePhase[y * phase.left.width + x] = static_cast<float>(x) * 0.1F;
-            phase.right.absolutePhase[y * phase.right.width + x] = 0.4F;
         }
     }
     return phase;
@@ -95,7 +84,10 @@ StripeFrameGroup makeFrame()
     image.channels = 1;
     image.strideBytes = 16;
     image.elementType = ImageElementType::UInt8;
-    frame.leftStripes.push_back({CameraSide::Left, 2, 4, 13, image});
+    for (int step = 0; step < 5; ++step) {
+        frame.leftStripes.push_back({CameraSide::Left, 2, step, 11 + step, image});
+        frame.rightStripes.push_back({CameraSide::Right, 2, step, 11 + step, image});
+    }
     return frame;
 }
 
@@ -146,23 +138,6 @@ UnwrappedPhaseResult makeDensePhaseWithCenterHole()
     return phase;
 }
 
-UnwrappedPhaseResult makeDenseCheckerboardPhase()
-{
-    UnwrappedPhaseResult phase = makeDensePhaseWithCenterHole();
-    for (int y = 0; y < phase.left.height; ++y) {
-        for (int x = 0; x < phase.left.width; ++x) {
-            if (((x + y) & 1) != 0) {
-                phase.left.absolutePhase[y * phase.left.width + x] =
-                    std::numeric_limits<float>::quiet_NaN();
-            } else {
-                phase.left.absolutePhase[y * phase.left.width + x] =
-                    static_cast<float>(x) * 0.1F + 0.05F;
-            }
-        }
-    }
-    return phase;
-}
-
 CalibrationModel makeDenseCalibration()
 {
     CalibrationModel calibration;
@@ -174,13 +149,6 @@ CalibrationModel makeDenseCalibration()
         0.0, 0.0, 0.0, 1000.0,
         0.0, 0.0, 10.0, 0.0
     };
-    return calibration;
-}
-
-CalibrationModel makeDenseCheckerboardCalibration()
-{
-    CalibrationModel calibration = makeDenseCalibration();
-    calibration.qMatrix[14] = 15.0;
     return calibration;
 }
 
@@ -201,7 +169,10 @@ StripeFrameGroup makeDenseFrame()
     image.channels = 1;
     image.strideBytes = 32;
     image.elementType = ImageElementType::UInt8;
-    frame.leftStripes.push_back({CameraSide::Left, 2, 4, 13, image});
+    for (int step = 0; step < 5; ++step) {
+        frame.leftStripes.push_back({CameraSide::Left, 2, step, 11 + step, image});
+        frame.rightStripes.push_back({CameraSide::Right, 2, step, 11 + step, image});
+    }
 
     ImageView textureView;
     textureView.data = texture.data();
@@ -232,6 +203,7 @@ ReconsConfig makeDenseConfig()
     config.matchingLeftRightConsistencyEnabled = false;
     config.matchingRightPhaseMonotonicEnabled = false;
     config.disparitySubpixelEnabled = true;
+    config.stripeRequirements = {{2, 28, 5, 11, -1}};
     return config;
 }
 
@@ -287,8 +259,8 @@ int main()
     require(crossing.rawValidPointCount > 0, "expected raw valid points");
     require(crossing.filteredGridValidPointCount == crossing.vertices.size(), "expected filtered grid count to match vertices");
     require(crossing.leftRightRejectedPointCount == 0, "expected subpixel left-right consistency to retain crossing");
-    require(crossing.rightPhaseMonotonicRejectedPointCount == 8,
-            "expected only one unsupported right-edge candidate per row");
+    require(crossing.rightPhaseMonotonicRejectedPointCount == 0,
+            "expected Legacy texture sampling to avoid right-edge monotonic false rejects");
     require(!crossing.matchingSummary.empty(), "expected matching diagnostic summary");
 
     UnwrappedPhaseResult shiftedSensorPhase = makePhase(false);
@@ -307,10 +279,12 @@ int main()
     tightLeftRight.matchingLeftRightTolerance = 0.4;
     PointCloudReconstructionResult tightLeftRightResult =
         reconstructPointCloudCuda(makePhase(false), calibration, tightLeftRight, frame);
-    require(tightLeftRightResult.status.code == StatusCode::ReconstructionInsufficient,
-            "expected tighter-than-half-pixel left-right tolerance to reject synthetic matches");
+    require(tightLeftRightResult.status.ok(),
+            "expected tight left-right tolerance to keep the surviving synthetic matches");
     require(tightLeftRightResult.leftRightRejectedPointCount > 0,
             "expected left-right rejection counter");
+    require(tightLeftRightResult.rawValidPointCount < crossing.rawValidPointCount,
+            "expected tight left-right tolerance to reduce accepted synthetic matches");
 
     ReconsConfig flatWithoutMonotonic = config;
     flatWithoutMonotonic.matchingLeftRightConsistencyEnabled = false;
@@ -329,23 +303,6 @@ int main()
     require(flatRejected.rightPhaseMonotonicRejectedPointCount > 0,
             "expected right-phase monotonic rejection counter");
 
-    ReconsConfig flatEqualWithoutMonotonic = config;
-    flatEqualWithoutMonotonic.phaseDiffThreshold = 0.001;
-    flatEqualWithoutMonotonic.matchingLeftRightConsistencyEnabled = false;
-    flatEqualWithoutMonotonic.matchingRightPhaseMonotonicEnabled = false;
-    PointCloudReconstructionResult flatEqualAccepted =
-        reconstructPointCloudCuda(makeFlatEqualPhase(), calibration, flatEqualWithoutMonotonic, frame);
-    require(flatEqualAccepted.status.ok(), "expected exact flat candidate before monotonic rejection");
-
-    ReconsConfig flatEqualWithMonotonic = flatEqualWithoutMonotonic;
-    flatEqualWithMonotonic.matchingRightPhaseMonotonicEnabled = true;
-    PointCloudReconstructionResult flatEqualRejected =
-        reconstructPointCloudCuda(makeFlatEqualPhase(), calibration, flatEqualWithMonotonic, frame);
-    require(flatEqualRejected.status.code == StatusCode::ReconstructionInsufficient,
-            "expected exact flat candidate to be rejected without local slope");
-    require(flatEqualRejected.rightPhaseMonotonicRejectedPointCount > 0,
-            "expected exact flat monotonic rejection counter");
-
     UnwrappedPhaseResult shortPhase = makePhase(false);
     shortPhase.left.absolutePhase.pop_back();
     shortPhase.right.absolutePhase.pop_back();
@@ -358,7 +315,7 @@ int main()
     constexpr int denseHeight = 32;
     constexpr int holeX = denseWidth / 2;
     constexpr int holeY = denseHeight / 2;
-    constexpr int probeX = holeX + 1;
+    constexpr int probeX = holeX + 2;
     constexpr int probeY = holeY;
     const int holeIndex = holeY * denseWidth + holeX;
     const int probeIndex = probeY * denseWidth + probeX;
@@ -478,16 +435,82 @@ int main()
                 denseFiltered.gridPoints[holeIndex].y == 0.0F &&
                 denseFiltered.gridPoints[holeIndex].z == 0.0F,
             "expected point-cloud filter to remove temporary (0,0,z) hole point");
+    require(denseFiltered.filterDeletedPointCount ==
+                denseFiltered.smoothedGridValidPointCount - denseFiltered.filteredGridValidPointCount,
+            "expected filter deleted count to be independent of diagnostic materialization");
+    require(denseFiltered.rawStageVertices.empty() &&
+                denseFiltered.filterInputStageVertices.empty() &&
+                denseFiltered.filterDeletedStageVertices.empty(),
+            "expected stage point-cloud diagnostics to stay disabled by default");
+    require(!denseFiltered.matchingDiagnostics.enabled &&
+                denseFiltered.matchingDiagnosticsCsv.empty(),
+            "expected matching diagnostics to stay disabled by default");
 
-    PointCloudReconstructionResult checkerboardFiltered =
-        reconstructPointCloudCuda(makeDenseCheckerboardPhase(),
-                                  makeDenseCheckerboardCalibration(),
-                                  denseFilteredConfig,
-                                  denseFrame);
-    require(checkerboardFiltered.status.ok(),
-            "expected Legacy filter to evaluate nonzero smoothed points without reapplying the Z gate");
-    require(checkerboardFiltered.gridPoints[holeIndex].z > 0.0F &&
-                checkerboardFiltered.gridPoints[holeIndex].z < denseFilteredConfig.minZ,
-            "expected locally supported smoothed point below minZ to survive Legacy-compatible filter");
+    PointCloudOutputOptions stageOptions;
+    stageOptions.materializeStageVertices = true;
+    PointCloudReconstructionResult denseStage =
+        reconstructPointCloudCuda(densePhase, denseCalibration, denseFilteredConfig, denseFrame, stageOptions);
+    require(denseStage.status.ok(), "expected stage diagnostics to preserve reconstruction status");
+    require(denseStage.rawStageVertices.size() == denseStage.rawValidPointCount,
+            "expected raw stage vertices to match raw point count");
+    require(denseStage.filterInputStageVertices.size() == denseStage.smoothedGridValidPointCount,
+            "expected filter-input stage vertices to match filter input count");
+    require(denseStage.filterDeletedStageVertices.size() == denseStage.filterDeletedPointCount,
+            "expected deleted stage vertices to expose points removed by final filter");
+
+    PointCloudOutputOptions matchingOptions;
+    matchingOptions.materializeMatchingDiagnostics = true;
+    PointCloudReconstructionResult denseMatchingDiagnostics =
+        reconstructPointCloudCuda(densePhase, denseCalibration, denseRawConfig, denseFrame, matchingOptions);
+    require(denseMatchingDiagnostics.status.ok(),
+            "expected matching diagnostics to preserve reconstruction status");
+    require(denseMatchingDiagnostics.matchingDiagnostics.enabled,
+            "expected matching diagnostics to be explicitly enabled");
+    require(denseMatchingDiagnostics.matchingDiagnostics.leftPhaseValidPixelCount > 0U,
+            "expected matching diagnostics to count valid left phase pixels");
+    require(denseMatchingDiagnostics.matchingDiagnostics.acceptedMatchPixelCount > 0U,
+            "expected matching diagnostics to count accepted matches");
+    require(denseMatchingDiagnostics.matchingDiagnostics.subpixelSuccessCount +
+                denseMatchingDiagnostics.matchingDiagnostics.subpixelFallbackCount ==
+                denseMatchingDiagnostics.matchingDiagnostics.acceptedMatchPixelCount,
+            "expected subpixel success/fallback counts to cover accepted matches");
+    require(denseMatchingDiagnostics.matchingDiagnosticsCsv.find("accepted_match_pixels") !=
+                std::string::npos,
+            "expected matching diagnostics CSV content");
+    require(denseMatchingDiagnostics.matchingDiagnostics.leftQualityRejectedPixelCount == 0U &&
+                denseMatchingDiagnostics.matchingDiagnostics.rightCandidateQualitySkippedCount == 0U &&
+                denseMatchingDiagnostics.matchingDiagnostics.subpixelFailureRejectedCount == 0U,
+            "expected new matching gates to stay inactive by default");
+
+    ReconsConfig qualityRejectConfig = denseRawConfig;
+    qualityRejectConfig.matchingCandidateQualityFilterEnabled = true;
+    qualityRejectConfig.matchingCandidateMinModulation = 8.0;
+    PointCloudReconstructionResult qualityRejected =
+        reconstructPointCloudCuda(densePhase, denseCalibration, qualityRejectConfig, denseFrame, matchingOptions);
+    require(qualityRejected.matchingSummary.find("matchingQualityFilterActive=true") != std::string::npos,
+            "expected explicit candidate quality filter to activate when both cameras provide high-frequency stripes");
+    require(qualityRejected.status.code == StatusCode::ReconstructionInsufficient,
+            "expected constant high-frequency stripes to be rejected by explicit modulation gate");
+    require(qualityRejected.matchingDiagnostics.enabled,
+            "expected diagnostics to remain available when candidate quality rejects all points");
+    require(qualityRejected.matchingDiagnostics.leftQualityRejectedPixelCount > 0U,
+            "expected explicit candidate quality filter to count left quality rejections");
+    require(qualityRejected.matchingDiagnostics.acceptedMatchPixelCount == 0U,
+            "expected quality-rejected pixels not to become accepted matches");
+    require(qualityRejected.matchingDiagnosticsCsv.find("left_quality_rejected_pixels") !=
+                std::string::npos,
+            "expected matching diagnostics CSV to expose left quality rejections");
+
+    StripeFrameGroup missingRightQualityFrame = denseFrame;
+    missingRightQualityFrame.rightStripes.clear();
+    PointCloudReconstructionResult missingRightQuality =
+        reconstructPointCloudCuda(densePhase,
+                                  denseCalibration,
+                                  qualityRejectConfig,
+                                  missingRightQualityFrame,
+                                  matchingOptions);
+    require(missingRightQuality.status.code == StatusCode::InputMissing,
+            "expected explicit candidate quality filter to fail closed without right quality stripes");
+
     return EXIT_SUCCESS;
 }

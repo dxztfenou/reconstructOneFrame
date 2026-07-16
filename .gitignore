@@ -67,6 +67,10 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+output/
+.agents/
+__pycache__/
+*.pyc
 
 # Local Legacy reference copy.
 # This is used only for comparison against D:\code\teethscanalgorithm3x4 and

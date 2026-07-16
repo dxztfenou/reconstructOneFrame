@@ -45,6 +45,11 @@ struct ReconsConfig {
     bool matchingRightPhaseMonotonicEnabled = false;
     int matchingRightPhaseMonotonicRadius = 1;
     double matchingRightPhaseMinSlope = 0.0001;
+    bool matchingRejectOnSubpixelFailure = false;
+    bool matchingCandidateQualityFilterEnabled = false;
+    double matchingCandidateMinModulation = 8.0;
+    bool matchingCandidateRejectSaturation = true;
+    bool matchingCandidateRejectLowLight = true;
     bool disparitySubpixelEnabled = false;
     bool disparityLocalConsistencyEnabled = false;
     double disparityLocalConsistencyThreshold = 6.0;
@@ -76,6 +81,9 @@ struct ReconsConfig {
     bool aiEnabled = false;
     bool debugMapOutputEnabled = false;
     bool saveOutputs = false;
+    bool phaseDiagnosticsEnabled = false;
+    bool matchingDiagnosticsEnabled = false;
+    bool pointCloudStageDiagnosticsEnabled = false;
     bool saveStagePointClouds = false;
     std::string calibResultPath;
     std::vector<StripeRequirement> stripeRequirements;

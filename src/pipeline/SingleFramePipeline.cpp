@@ -8,11 +8,16 @@
 #include "quality/PointReliability.h"
 #include "reconstruction/PointCloudReconstructor.h"
 
+#include <opencv2/core.hpp>
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
+#include <iomanip>
 #include <sstream>
 
 namespace reconstruct_one_frame {
@@ -88,6 +93,158 @@ void materializeFrameOutputMaps(const PointCloudReconstructionResult& pointCloud
     }
 }
 
+Status writeStagePly(const std::filesystem::path& outputDirectory,
+                     const char* fileName,
+                     const std::vector<PointCloudVertex>& vertices,
+                     std::size_t& writtenVertices)
+{
+    Status status = writeAsciiPly((outputDirectory / fileName).string(), vertices);
+    if (status.ok()) {
+        writtenVertices += vertices.size();
+    }
+    return status;
+}
+
+const char* cameraSideName(CameraSide camera)
+{
+    switch (camera) {
+    case CameraSide::Left:
+        return "left";
+    case CameraSide::Right:
+        return "right";
+    default:
+        return "unknown";
+    }
+}
+
+Status writeTextFile(const std::filesystem::path& path, const std::string& content)
+{
+    try {
+        if (path.has_parent_path()) {
+            std::filesystem::create_directories(path.parent_path());
+        }
+        std::ofstream out(path);
+        if (!out) {
+            return {StatusCode::OutputWriteFailed,
+                    "SingleFramePipeline",
+                    "failed to open diagnostic output: " + path.string()};
+        }
+        out << content;
+        return {};
+    } catch (const std::exception& ex) {
+        return {StatusCode::OutputWriteFailed, "SingleFramePipeline", ex.what()};
+    }
+}
+
+Status writePhaseDiagnosticsCsv(const std::filesystem::path& outputDirectory,
+                                const WrappedPhaseResult& wrappedPhase)
+{
+    std::ostringstream out;
+    out << "camera,frequencyIndex,frequencyValue,width,height,validPixelCount,"
+           "meanModulation,minModulation,maxModulation,modulationMaterialized\n";
+    out << std::fixed << std::setprecision(6);
+    for (const WrappedPhaseFrequencyResult& frequency : wrappedPhase.frequencies) {
+        out << cameraSideName(frequency.camera) << ','
+            << frequency.frequencyIndex << ','
+            << frequency.frequencyValue << ','
+            << frequency.width << ','
+            << frequency.height << ','
+            << frequency.validPixelCount << ','
+            << frequency.meanModulation << ','
+            << frequency.minModulation << ','
+            << frequency.maxModulation << ','
+            << (!frequency.modulation.empty() ? "true" : "false") << '\n';
+    }
+    return writeTextFile(outputDirectory / "phase-diagnostics.csv", out.str());
+}
+
+cv::Mat makeFloatMat(int width, int height, const std::vector<float>& values)
+{
+    cv::Mat mat(height, width, CV_32FC1, cv::Scalar(std::numeric_limits<float>::quiet_NaN()));
+    const std::size_t expected =
+        static_cast<std::size_t>(std::max(width, 0)) * static_cast<std::size_t>(std::max(height, 0));
+    if (width > 0 && height > 0 && values.size() == expected) {
+        std::memcpy(mat.ptr<float>(), values.data(), sizeof(float) * expected);
+    }
+    return mat;
+}
+
+cv::Mat makeIntMat(int width, int height, const std::vector<int>& values)
+{
+    cv::Mat mat(height, width, CV_32SC1, cv::Scalar(0));
+    const std::size_t expected =
+        static_cast<std::size_t>(std::max(width, 0)) * static_cast<std::size_t>(std::max(height, 0));
+    if (width > 0 && height > 0 && values.size() == expected) {
+        std::memcpy(mat.ptr<int>(), values.data(), sizeof(int) * expected);
+    }
+    return mat;
+}
+
+std::string phaseMapPrefix(CameraSide camera)
+{
+    return camera == CameraSide::Left ? "left" : "right";
+}
+
+Status writePhaseDebugMaps(const std::filesystem::path& outputDirectory,
+                           const WrappedPhaseResult& wrappedPhase,
+                           const UnwrappedPhaseResult& unwrappedPhase)
+{
+    try {
+        std::filesystem::create_directories(outputDirectory);
+        cv::FileStorage maps((outputDirectory / "phase-debug-maps.yml.gz").string(),
+                             cv::FileStorage::WRITE);
+        if (!maps.isOpened()) {
+            return {StatusCode::OutputWriteFailed,
+                    "SingleFramePipeline",
+                    "failed to open phase debug map output: " +
+                        (outputDirectory / "phase-debug-maps.yml.gz").string()};
+        }
+
+        maps << "phase_left" << makeFloatMat(unwrappedPhase.left.width,
+                                              unwrappedPhase.left.height,
+                                              unwrappedPhase.left.absolutePhase);
+        maps << "phase_right" << makeFloatMat(unwrappedPhase.right.width,
+                                               unwrappedPhase.right.height,
+                                               unwrappedPhase.right.absolutePhase);
+        for (const WrappedPhaseFrequencyResult& frequency : wrappedPhase.frequencies) {
+            const std::string prefix = phaseMapPrefix(frequency.camera);
+            maps << ("wrapped_phase_" + prefix + "_f" + std::to_string(frequency.frequencyIndex))
+                 << makeFloatMat(frequency.width, frequency.height, frequency.phase);
+            if (!frequency.modulation.empty()) {
+                maps << ("modulation_" + prefix + "_f" + std::to_string(frequency.frequencyIndex))
+                     << makeFloatMat(frequency.width, frequency.height, frequency.modulation);
+            }
+        }
+        return {};
+    } catch (const std::exception& ex) {
+        return {StatusCode::OutputWriteFailed, "SingleFramePipeline", ex.what()};
+    }
+}
+
+Status writePointCloudDebugMaps(const std::filesystem::path& outputDirectory,
+                                const PointCloudReconstructionResult& pointCloud)
+{
+    try {
+        std::filesystem::create_directories(outputDirectory);
+        cv::FileStorage maps((outputDirectory / "pointcloud-debug-maps.yml.gz").string(),
+                             cv::FileStorage::WRITE);
+        if (!maps.isOpened()) {
+            return {StatusCode::OutputWriteFailed,
+                    "SingleFramePipeline",
+                    "failed to open point-cloud debug map output: " +
+                        (outputDirectory / "pointcloud-debug-maps.yml.gz").string()};
+        }
+
+        maps << "disparity" << makeFloatMat(pointCloud.width, pointCloud.height, pointCloud.debugDisparity);
+        maps << "scores" << makeFloatMat(pointCloud.width, pointCloud.height, pointCloud.debugMatchScores);
+        maps << "candidate_count" << makeIntMat(pointCloud.width, pointCloud.height, pointCloud.debugCandidateCounts);
+        maps << "depth_map" << makeFloatMat(pointCloud.width, pointCloud.height, pointCloud.debugDepthMap);
+        return {};
+    } catch (const std::exception& ex) {
+        return {StatusCode::OutputWriteFailed, "SingleFramePipeline", ex.what()};
+    }
+}
+
 } // namespace
 
 Status SingleFramePipeline::initialize(ReconsConfig config,
@@ -157,7 +314,10 @@ FrameResult SingleFramePipeline::run(const StripeFrameGroup& frame) const
 
     stageStart = std::chrono::steady_clock::now();
     WrappedPhaseOptions wrappedPhaseOptions;
-    wrappedPhaseOptions.materializeModulation = false;
+    // phase 诊断只在明确打开时保留整幅 modulation；默认只留下轻量统计，避免热路径多占内存。
+    wrappedPhaseOptions.materializeModulation =
+        options_.writePly && !options_.outputDirectory.empty() &&
+        config_.saveOutputs && config_.phaseDiagnosticsEnabled;
     WrappedPhaseResult wrappedPhase = computeWrappedPhaseCuda(
         frame, config_, calibration_, wrappedPhaseWorkspace_, wrappedPhaseOptions);
     wrappedPhase.stats.elapsedMs = elapsedMsSince(stageStart);
@@ -197,10 +357,18 @@ FrameResult SingleFramePipeline::run(const StripeFrameGroup& frame) const
 
     stageStart = std::chrono::steady_clock::now();
     PointCloudOutputOptions pointCloudOutputOptions;
+    const bool pointCloudStageDiagnosticsEnabled =
+        config_.pointCloudStageDiagnosticsEnabled || config_.saveStagePointClouds;
     pointCloudOutputOptions.materializeVertices =
         options_.materializeFrameOutputs || options_.writePly || !options_.compareLegacyPlyPath.empty();
     pointCloudOutputOptions.materializeQualityGrid =
         options_.materializeFrameOutputs || config_.qualityInfoEnabled;
+    pointCloudOutputOptions.materializeMatchingDiagnostics =
+        options_.writePly && !options_.outputDirectory.empty() &&
+        config_.saveOutputs && config_.matchingDiagnosticsEnabled;
+    pointCloudOutputOptions.materializeStageVertices =
+        options_.writePly && !options_.outputDirectory.empty() &&
+        config_.saveOutputs && pointCloudStageDiagnosticsEnabled;
     PointCloudReconstructionResult pointCloud =
         reconstructPointCloudCuda(
             unwrappedPhase, calibration_, config_, frame, pointCloudWorkspace_, pointCloudOutputOptions);
@@ -266,6 +434,79 @@ FrameResult SingleFramePipeline::run(const StripeFrameGroup& frame) const
         }
         result.outputPointCloudPath = outputPath.string();
         result.stats.push_back(outputStats);
+
+        if (config_.saveOutputs && config_.phaseDiagnosticsEnabled) {
+            StageStats phaseDiagnosticsStats;
+            phaseDiagnosticsStats.stageName = "phase_diagnostics_output";
+            stageStart = std::chrono::steady_clock::now();
+            status = writePhaseDiagnosticsCsv(outputDirectory, wrappedPhase);
+            if (status.ok()) {
+                status = writePhaseDebugMaps(outputDirectory, wrappedPhase, unwrappedPhase);
+            }
+            phaseDiagnosticsStats.elapsedMs = elapsedMsSince(stageStart);
+            phaseDiagnosticsStats.status = status;
+            phaseDiagnosticsStats.validImageCount = wrappedPhase.frequencies.size();
+            if (!status.ok()) {
+                result.stats.push_back(phaseDiagnosticsStats);
+                result.status = status;
+                logWarn("pipeline failed at phase diagnostics output: " +
+                        std::string(statusCodeName(status.code)) + " " + status.message);
+                return result;
+            }
+            result.stats.push_back(phaseDiagnosticsStats);
+        }
+
+        if (config_.saveOutputs && config_.matchingDiagnosticsEnabled) {
+            StageStats matchingDiagnosticsStats;
+            matchingDiagnosticsStats.stageName = "matching_diagnostics_output";
+            stageStart = std::chrono::steady_clock::now();
+            status = writeTextFile(outputDirectory / "matching-diagnostics.csv",
+                                   pointCloud.matchingDiagnosticsCsv);
+            matchingDiagnosticsStats.elapsedMs = elapsedMsSince(stageStart);
+            matchingDiagnosticsStats.status = status;
+            matchingDiagnosticsStats.validImageCount =
+                pointCloud.matchingDiagnostics.acceptedMatchPixelCount;
+            if (!status.ok()) {
+                result.stats.push_back(matchingDiagnosticsStats);
+                result.status = status;
+                logWarn("pipeline failed at matching diagnostics output: " +
+                        std::string(statusCodeName(status.code)) + " " + status.message);
+                return result;
+            }
+            result.stats.push_back(matchingDiagnosticsStats);
+        }
+
+        if (config_.saveOutputs && pointCloudStageDiagnosticsEnabled) {
+            StageStats stageOutputStats;
+            stageOutputStats.stageName = "stage_ply_output";
+            stageStart = std::chrono::steady_clock::now();
+            std::size_t writtenVertices = 0U;
+
+            // 这些诊断 PLY 对齐 Legacy 的 stage 思路：raw 是重投影结果，
+            // filter-input 是真正喂给三维连通性 filter 的点，deleted 是
+            // filter 输入里被 final filter 删除的点。默认关闭，避免热路径
+            // 为了调试额外回传整帧点云。
+            status = writeStagePly(outputDirectory, "raw-points.ply", pointCloud.rawStageVertices, writtenVertices);
+            if (status.ok()) {
+                status = writeStagePly(outputDirectory, "filter-input-points.ply", pointCloud.filterInputStageVertices, writtenVertices);
+            }
+            if (status.ok()) {
+                status = writeStagePly(outputDirectory, "filter-deleted-points.ply", pointCloud.filterDeletedStageVertices, writtenVertices);
+            }
+            if (status.ok()) {
+                status = writePointCloudDebugMaps(outputDirectory, pointCloud);
+            }
+            stageOutputStats.elapsedMs = elapsedMsSince(stageStart);
+            stageOutputStats.status = status;
+            stageOutputStats.validImageCount = writtenVertices;
+            if (!status.ok()) {
+                result.stats.push_back(stageOutputStats);
+                result.status = status;
+                logWarn("pipeline failed at stage PLY output: " + std::string(statusCodeName(status.code)) + " " + status.message);
+                return result;
+            }
+            result.stats.push_back(stageOutputStats);
+        }
     }
 
     if (!options_.compareLegacyPlyPath.empty()) {

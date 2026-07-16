@@ -10,7 +10,9 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <iomanip>
 #include <limits>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -19,8 +21,22 @@ namespace reconstruct_one_frame {
 namespace {
 
 constexpr float kFloatEpsilon = 1.0e-6F;
+constexpr int kMatchingCounterLeftRightRejected = 0;
+constexpr int kMatchingCounterRightPhaseMonotonicRejected = 1;
+constexpr int kMatchingCounterLeftPhaseValid = 2;
+constexpr int kMatchingCounterThresholdRejected = 3;
+constexpr int kMatchingCounterUniquenessRejected = 4;
+constexpr int kMatchingCounterAccepted = 5;
+constexpr int kMatchingCounterSubpixelSuccess = 6;
+constexpr int kMatchingCounterSubpixelFallback = 7;
+constexpr int kMatchingCounterLeftQualityRejected = 8;
+constexpr int kMatchingCounterRightQualitySkipped = 9;
+constexpr int kMatchingCounterSubpixelFailureRejected = 10;
+constexpr int kMatchingCounterCount = 11;
 
 using SteadyClock = std::chrono::steady_clock;
+
+Status cudaStatus(cudaError_t error, const char* operation);
 
 double elapsedMilliseconds(SteadyClock::time_point start)
 {
@@ -98,6 +114,48 @@ Status cudaStatus(cudaError_t error, const char* operation)
     return {StatusCode::CudaKernelFailed, "PointCloudReconstructorCuda", std::string(operation) + ": " + cudaGetErrorString(error)};
 }
 
+class PhaseTexture2D {
+public:
+    PhaseTexture2D() = default;
+    PhaseTexture2D(const PhaseTexture2D&) = delete;
+    PhaseTexture2D& operator=(const PhaseTexture2D&) = delete;
+
+    ~PhaseTexture2D()
+    {
+        if (texture_ != 0U) {
+            cudaDestroyTextureObject(texture_);
+        }
+    }
+
+    Status create(const float* devicePtr, int width, int height, const char* label)
+    {
+        cudaResourceDesc resource {};
+        resource.resType = cudaResourceTypePitch2D;
+        resource.res.pitch2D.devPtr = const_cast<float*>(devicePtr);
+        resource.res.pitch2D.desc = cudaCreateChannelDesc<float>();
+        resource.res.pitch2D.width = static_cast<std::size_t>(width);
+        resource.res.pitch2D.height = static_cast<std::size_t>(height);
+        resource.res.pitch2D.pitchInBytes = static_cast<std::size_t>(width) * sizeof(float);
+
+        cudaTextureDesc textureDesc {};
+        textureDesc.readMode = cudaReadModeElementType;
+        textureDesc.addressMode[0] = cudaAddressModeClamp;
+        textureDesc.addressMode[1] = cudaAddressModeClamp;
+        textureDesc.filterMode = cudaFilterModeLinear;
+        textureDesc.normalizedCoords = 0;
+
+        return cudaStatus(cudaCreateTextureObject(&texture_, &resource, &textureDesc, nullptr), label);
+    }
+
+    cudaTextureObject_t get() const noexcept
+    {
+        return texture_;
+    }
+
+private:
+    cudaTextureObject_t texture_ = 0U;
+};
+
 Status ensureCapacity(DeviceBuffer& buffer,
                       std::size_t bytes,
                       const char* operation,
@@ -131,6 +189,52 @@ bool isValidPoint(const HostFloat3& point)
 {
     return std::isfinite(point.x) && std::isfinite(point.y) && std::isfinite(point.z) &&
            !(point.x == 0.0F && point.y == 0.0F && point.z == 0.0F);
+}
+
+PointCloudVertex makeDiagnosticVertex(const HostFloat3& point,
+                                      std::size_t pixelIndex,
+                                      int width,
+                                      std::uint8_t red,
+                                      std::uint8_t green,
+                                      std::uint8_t blue)
+{
+    PointCloudVertex vertex;
+    vertex.x = point.x;
+    vertex.y = point.y;
+    vertex.z = point.z;
+    vertex.u = static_cast<int>(pixelIndex % static_cast<std::size_t>(width));
+    vertex.v = static_cast<int>(pixelIndex / static_cast<std::size_t>(width));
+    vertex.r = red;
+    vertex.g = green;
+    vertex.b = blue;
+    return vertex;
+}
+
+std::string formatMatchingDiagnosticsCsv(const PointCloudMatchingDiagnostics& diagnostics)
+{
+    std::ostringstream out;
+    out << "metric,value\n";
+    out << "enabled," << (diagnostics.enabled ? "true" : "false") << "\n";
+    out << "left_phase_valid_pixels," << diagnostics.leftPhaseValidPixelCount << "\n";
+    out << "threshold_rejected_pixels," << diagnostics.thresholdRejectedPixelCount << "\n";
+    out << "uniqueness_rejected_pixels," << diagnostics.uniquenessRejectedPixelCount << "\n";
+    out << "accepted_match_pixels," << diagnostics.acceptedMatchPixelCount << "\n";
+    out << "left_right_rejected_points," << diagnostics.leftRightRejectedPointCount << "\n";
+    out << "right_phase_monotonic_rejected_points,"
+        << diagnostics.rightPhaseMonotonicRejectedPointCount << "\n";
+    out << "left_quality_rejected_pixels," << diagnostics.leftQualityRejectedPixelCount << "\n";
+    out << "right_candidate_quality_skipped," << diagnostics.rightCandidateQualitySkippedCount << "\n";
+    out << "subpixel_failure_rejected," << diagnostics.subpixelFailureRejectedCount << "\n";
+    out << "subpixel_success," << diagnostics.subpixelSuccessCount << "\n";
+    out << "subpixel_fallback," << diagnostics.subpixelFallbackCount << "\n";
+    out << "pixels_with_near_candidates," << diagnostics.pixelsWithNearCandidates << "\n";
+    out << "ambiguous_candidate_pixels," << diagnostics.ambiguousCandidatePixelCount << "\n";
+    out << "max_near_candidate_count," << diagnostics.maxNearCandidateCount << "\n";
+    out << std::fixed << std::setprecision(6);
+    out << "mean_near_candidate_count," << diagnostics.meanNearCandidateCount << "\n";
+    out << "mean_accepted_match_cost," << diagnostics.meanAcceptedMatchCost << "\n";
+    out << "max_accepted_match_cost," << diagnostics.maxAcceptedMatchCost << "\n";
+    return out.str();
 }
 
 DisparityWindow makeDisparityWindow(const CalibrationModel& calibration,
@@ -461,8 +565,13 @@ __global__ void countInvalidMaskKernel(const unsigned char* mask,
     }
 }
 
-__device__ bool leftRightConsistent(const float* left,
-                                    const float* right,
+__device__ float samplePhase(cudaTextureObject_t phaseTexture, int x, int y)
+{
+    return tex2D<float>(phaseTexture, x, y);
+}
+
+__device__ bool leftRightConsistent(cudaTextureObject_t leftTexture,
+                                    cudaTextureObject_t rightTexture,
                                     int row,
                                     int leftX,
                                     int rightX,
@@ -474,7 +583,7 @@ __device__ bool leftRightConsistent(const float* left,
                                     float tolerance,
                                     int useSubpixel)
 {
-    const float rightPhase = right[row * width + rightX];
+    const float rightPhase = samplePhase(rightTexture, rightX, row);
     int begin = 0;
     int end = width - 1;
     if (useWindow != 0) {
@@ -488,7 +597,7 @@ __device__ bool leftRightConsistent(const float* left,
     float bestCost = FLT_MAX;
     int bestX = -1;
     for (int x = begin; x <= end; ++x) {
-        const float leftPhase = left[row * width + x];
+        const float leftPhase = samplePhase(leftTexture, x, row);
         if (!isfinite(leftPhase)) {
             continue;
         }
@@ -503,16 +612,16 @@ __device__ bool leftRightConsistent(const float* left,
     }
 
     float bestXFloat = static_cast<float>(bestX);
-    const float bestLeftPhase = left[row * width + bestX];
+    const float bestLeftPhase = samplePhase(leftTexture, bestX, row);
     if (useSubpixel != 0 && isfinite(bestLeftPhase)) {
         if (rightPhase > bestLeftPhase && bestX + 1 < width) {
-            const float nextPhase = left[row * width + bestX + 1];
+            const float nextPhase = samplePhase(leftTexture, bestX + 1, row);
             if (isfinite(nextPhase) && nextPhase > bestLeftPhase && rightPhase <= nextPhase) {
                 bestXFloat = static_cast<float>(bestX) +
                              (rightPhase - bestLeftPhase) / (nextPhase - bestLeftPhase);
             }
         } else if (rightPhase < bestLeftPhase && bestX - 1 >= 0) {
-            const float previousPhase = left[row * width + bestX - 1];
+            const float previousPhase = samplePhase(leftTexture, bestX - 1, row);
             if (isfinite(previousPhase) && previousPhase < bestLeftPhase && rightPhase >= previousPhase) {
                 bestXFloat = static_cast<float>(bestX) -
                              (bestLeftPhase - rightPhase) / (bestLeftPhase - previousPhase);
@@ -522,7 +631,8 @@ __device__ bool leftRightConsistent(const float* left,
     return fabsf(bestXFloat - static_cast<float>(leftX)) <= tolerance;
 }
 
-__device__ bool rightPhaseMonotonicSupported(const float* rightPhaseRow,
+__device__ bool rightPhaseMonotonicSupported(cudaTextureObject_t rightTexture,
+                                             int row,
                                              int width,
                                              int bestX,
                                              float leftPhase,
@@ -541,13 +651,13 @@ __device__ bool rightPhaseMonotonicSupported(const float* rightPhaseRow,
         for (int step = 1; step <= checkedRadius; ++step) {
             const int lowerX = bestX - step;
             if (lowerX >= 0) {
-                const float lower = rightPhaseRow[lowerX];
+                const float lower = samplePhase(rightTexture, lowerX, row);
                 hasLowerNeighbor = hasLowerNeighbor ||
                                    (isfinite(lower) && lower < bestPhase - slope);
             }
             const int higherX = bestX + step;
             if (higherX < width) {
-                const float higher = rightPhaseRow[higherX];
+                const float higher = samplePhase(rightTexture, higherX, row);
                 hasHigherNeighbor = hasHigherNeighbor ||
                                     (isfinite(higher) && higher > bestPhase + slope);
             }
@@ -566,7 +676,7 @@ __device__ bool rightPhaseMonotonicSupported(const float* rightPhaseRow,
             if (x >= width) {
                 break;
             }
-            const float neighbor = rightPhaseRow[x];
+            const float neighbor = samplePhase(rightTexture, x, row);
             if (isfinite(neighbor) &&
                 neighbor > bestPhase + slope &&
                 neighbor >= leftPhase - slope) {
@@ -579,7 +689,7 @@ __device__ bool rightPhaseMonotonicSupported(const float* rightPhaseRow,
             if (x < 0) {
                 break;
             }
-            const float neighbor = rightPhaseRow[x];
+            const float neighbor = samplePhase(rightTexture, x, row);
             if (isfinite(neighbor) &&
                 neighbor < bestPhase - slope &&
                 neighbor <= leftPhase + slope) {
@@ -590,9 +700,42 @@ __device__ bool rightPhaseMonotonicSupported(const float* rightPhaseRow,
     return false;
 }
 
-__global__ void computeDisparityKernel(const float* left,
-                                       const float* right,
+__device__ bool candidatePassesQualityFilter(int idx,
+                                             const float* modulation,
+                                             const unsigned char* lightFlags,
+                                             int pixelCount,
+                                             float minModulation,
+                                             int rejectSaturation,
+                                             int rejectLowLight)
+{
+    if (idx < 0 || idx >= pixelCount) {
+        return false;
+    }
+    if (lightFlags != nullptr) {
+        const unsigned char flags = lightFlags[idx];
+        if (rejectSaturation != 0 && (flags & 1U) != 0U) {
+            return false;
+        }
+        if (rejectLowLight != 0 && (flags & (2U | 4U)) != 0U) {
+            return false;
+        }
+    }
+    if (modulation != nullptr) {
+        const float value = modulation[idx];
+        if (!isfinite(value) || value < minModulation) {
+            return false;
+        }
+    }
+    return true;
+}
+
+__global__ void computeDisparityKernel(cudaTextureObject_t leftTexture,
+                                       cudaTextureObject_t rightTexture,
                                        const unsigned char* validMask,
+                                       const float* leftQualityModulation,
+                                       const unsigned char* leftQualityFlags,
+                                       const float* rightQualityModulation,
+                                       const unsigned char* rightQualityFlags,
                                        float* disparity,
                                        float* scores,
                                        int* candidateCounts,
@@ -611,6 +754,12 @@ __global__ void computeDisparityKernel(const float* left,
                                        int rightPhaseMonotonicRadius,
                                        float rightPhaseMinimumSlope,
                                        int useSubpixel,
+                                       int rejectOnSubpixelFailure,
+                                       int useCandidateQualityFilter,
+                                       float candidateMinModulation,
+                                       int candidateRejectSaturation,
+                                       int candidateRejectLowLight,
+                                       int collectDiagnostics,
                                        unsigned int* rejectionCounts)
 {
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -626,8 +775,25 @@ __global__ void computeDisparityKernel(const float* left,
     if (validMask != nullptr && validMask[idx] == 0U) {
         return;
     }
-    const float leftPhase = left[idx];
+    const float leftPhase = samplePhase(leftTexture, x, y);
     if (!isfinite(leftPhase) || fabsf(leftPhase) < 0.001F) {
+        return;
+    }
+    const int pixelCount = width * height;
+    if (collectDiagnostics != 0 && rejectionCounts != nullptr) {
+        atomicAdd(&rejectionCounts[kMatchingCounterLeftPhaseValid], 1U);
+    }
+    if (useCandidateQualityFilter != 0 &&
+        !candidatePassesQualityFilter(idx,
+                                      leftQualityModulation,
+                                      leftQualityFlags,
+                                      pixelCount,
+                                      candidateMinModulation,
+                                      candidateRejectSaturation,
+                                      candidateRejectLowLight)) {
+        if (collectDiagnostics != 0 && rejectionCounts != nullptr) {
+            atomicAdd(&rejectionCounts[kMatchingCounterLeftQualityRejected], 1U);
+        }
         return;
     }
 
@@ -646,8 +812,21 @@ __global__ void computeDisparityKernel(const float* left,
     int bestX = -1;
     int nearCandidateCount = 0;
     for (int rx = begin; rx <= end; ++rx) {
-        const float rightPhase = right[y * width + rx];
+        const float rightPhase = samplePhase(rightTexture, rx, y);
         if (!isfinite(rightPhase) || x - rx > width - 1) {
+            continue;
+        }
+        if (useCandidateQualityFilter != 0 &&
+            !candidatePassesQualityFilter(y * width + rx,
+                                          rightQualityModulation,
+                                          rightQualityFlags,
+                                          pixelCount,
+                                          candidateMinModulation,
+                                          candidateRejectSaturation,
+                                          candidateRejectLowLight)) {
+            if (collectDiagnostics != 0 && rejectionCounts != nullptr) {
+                atomicAdd(&rejectionCounts[kMatchingCounterRightQualitySkipped], 1U);
+            }
             continue;
         }
         const float cost = fabsf(leftPhase - rightPhase);
@@ -665,16 +844,28 @@ __global__ void computeDisparityKernel(const float* left,
 
     candidateCounts[idx] = nearCandidateCount;
     bool matchOk = bestX >= 0 && bestCost < threshold;
+    if (!matchOk) {
+        if (collectDiagnostics != 0 && rejectionCounts != nullptr) {
+            atomicAdd(&rejectionCounts[kMatchingCounterThresholdRejected], 1U);
+        }
+        return;
+    }
     if (matchOk && useUniqueness != 0) {
         if (nearCandidateCount > max(1, maxCandidateCount)) {
             matchOk = false;
         } else if (secondBestCost < FLT_MAX && secondBestCost - bestCost < minSecondBestGap) {
             matchOk = false;
         }
+        if (!matchOk) {
+            if (collectDiagnostics != 0 && rejectionCounts != nullptr) {
+                atomicAdd(&rejectionCounts[kMatchingCounterUniquenessRejected], 1U);
+            }
+            return;
+        }
     }
     if (matchOk && useLeftRightConsistency != 0) {
-        if (!leftRightConsistent(left,
-                                 right,
+        if (!leftRightConsistent(leftTexture,
+                                 rightTexture,
                                  y,
                                  x,
                                  bestX,
@@ -687,13 +878,14 @@ __global__ void computeDisparityKernel(const float* left,
                                  useSubpixel)) {
             matchOk = false;
             if (rejectionCounts != nullptr) {
-                atomicAdd(&rejectionCounts[0], 1U);
+                atomicAdd(&rejectionCounts[kMatchingCounterLeftRightRejected], 1U);
             }
         }
     }
     if (matchOk && useRightPhaseMonotonicity != 0) {
-        const float bestRightPhase = right[y * width + bestX];
-        if (!rightPhaseMonotonicSupported(&right[y * width],
+        const float bestRightPhase = samplePhase(rightTexture, bestX, y);
+        if (!rightPhaseMonotonicSupported(rightTexture,
+                                          y,
                                           width,
                                           bestX,
                                           leftPhase,
@@ -702,7 +894,7 @@ __global__ void computeDisparityKernel(const float* left,
                                           rightPhaseMinimumSlope)) {
             matchOk = false;
             if (rejectionCounts != nullptr) {
-                atomicAdd(&rejectionCounts[1], 1U);
+                atomicAdd(&rejectionCounts[kMatchingCounterRightPhaseMonotonicRejected], 1U);
             }
         }
     }
@@ -711,18 +903,41 @@ __global__ void computeDisparityKernel(const float* left,
     }
 
     float bestXFloat = static_cast<float>(bestX);
-    const float bestRightPhase = right[y * width + bestX];
+    const float bestRightPhase = samplePhase(rightTexture, bestX, y);
+    bool subpixelResolved = false;
+    bool subpixelFailed = false;
     if (useSubpixel != 0) {
         if (leftPhase > bestRightPhase && bestX + 1 < width) {
-            const float nextPhase = right[y * width + bestX + 1];
+            const float nextPhase = samplePhase(rightTexture, bestX + 1, y);
             if (isfinite(nextPhase) && nextPhase > bestRightPhase && leftPhase <= nextPhase) {
                 bestXFloat = static_cast<float>(bestX) + (leftPhase - bestRightPhase) / (nextPhase - bestRightPhase);
+                subpixelResolved = true;
+            } else {
+                subpixelFailed = true;
             }
         } else if (leftPhase < bestRightPhase && bestX - 1 >= 0) {
-            const float prevPhase = right[y * width + bestX - 1];
+            const float prevPhase = samplePhase(rightTexture, bestX - 1, y);
             if (isfinite(prevPhase) && prevPhase < bestRightPhase && leftPhase >= prevPhase) {
                 bestXFloat = static_cast<float>(bestX) - (bestRightPhase - leftPhase) / (bestRightPhase - prevPhase);
+                subpixelResolved = true;
+            } else {
+                subpixelFailed = true;
             }
+        }
+        subpixelFailed = subpixelFailed || !subpixelResolved;
+    }
+    if (rejectOnSubpixelFailure != 0 && subpixelFailed) {
+        if (collectDiagnostics != 0 && rejectionCounts != nullptr) {
+            atomicAdd(&rejectionCounts[kMatchingCounterSubpixelFailureRejected], 1U);
+        }
+        return;
+    }
+    if (collectDiagnostics != 0 && rejectionCounts != nullptr) {
+        atomicAdd(&rejectionCounts[kMatchingCounterAccepted], 1U);
+        if (useSubpixel != 0) {
+            atomicAdd(&rejectionCounts[subpixelResolved ? kMatchingCounterSubpixelSuccess
+                                                        : kMatchingCounterSubpixelFallback],
+                      1U);
         }
     }
 
@@ -1042,7 +1257,7 @@ struct HighFrequencyQualityPlan {
     std::vector<float> cosWeights;
 };
 
-HighFrequencyQualityPlan makeHighFrequencyQualityPlan(const StripeFrameGroup& frame,
+HighFrequencyQualityPlan makeHighFrequencyQualityPlan(const std::vector<StripeImage>& stripes,
                                                       const ReconsConfig& config)
 {
     HighFrequencyQualityPlan plan;
@@ -1058,7 +1273,7 @@ HighFrequencyQualityPlan makeHighFrequencyQualityPlan(const StripeFrameGroup& fr
     plan.cosWeights.reserve(static_cast<std::size_t>(highFrequency.requiredPhaseSteps));
     for (int step = 0; step < highFrequency.requiredPhaseSteps; ++step) {
         const StripeImage* stripeForStep = nullptr;
-        for (const StripeImage& stripe : frame.leftStripes) {
+        for (const StripeImage& stripe : stripes) {
             if (stripe.frequencyIndex == highFrequency.frequencyIndex && stripe.phaseStepIndex == step) {
                 stripeForStep = &stripe;
                 break;
@@ -1116,6 +1331,9 @@ struct PointCloudCudaWorkspace::Impl {
     DeviceBuffer qualityInputImages;
     DeviceBuffer qualityModulation;
     DeviceBuffer qualityLightFlags;
+    DeviceBuffer rightQualityInputImages;
+    DeviceBuffer rightQualityModulation;
+    DeviceBuffer rightQualityLightFlags;
 };
 
 PointCloudCudaWorkspace::PointCloudCudaWorkspace()
@@ -1187,18 +1405,42 @@ PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseRes
     const std::size_t pointBytes = sizeof(float3) * static_cast<std::size_t>(pixelCount);
     const bool materializeVertices = outputOptions.materializeVertices;
     const bool materializeQualityGrid = outputOptions.materializeQualityGrid;
-    const bool materializePointCloud = materializeVertices || materializeQualityGrid;
+    const bool materializeMatchingDiagnostics = outputOptions.materializeMatchingDiagnostics;
+    const bool materializeStageVertices = outputOptions.materializeStageVertices;
+    const bool materializeMatchingSignals =
+        materializeQualityGrid || materializeMatchingDiagnostics || materializeStageVertices;
+    const bool materializePointCloud =
+        materializeVertices || materializeQualityGrid || materializeStageVertices;
     const bool computeNormals = materializePointCloud;
     const bool materializeColor = materializeVertices && config.colorTextureEnabled;
     const bool clear255Active = config.clear255 && frame.metalScan;
     const bool needsAuxiliaryColor = materializeColor || clear255Active;
-    const HighFrequencyQualityPlan highFrequencyQualityPlan =
-        materializeQualityGrid && config.qualityInfoUseModulation
-        ? makeHighFrequencyQualityPlan(frame, config)
+    const bool needsMatchingQualitySignals = config.matchingCandidateQualityFilterEnabled;
+    const bool needsLeftQualitySignals =
+        (materializeQualityGrid && config.qualityInfoUseModulation) || needsMatchingQualitySignals;
+    const HighFrequencyQualityPlan leftHighFrequencyQualityPlan =
+        needsLeftQualitySignals
+        ? makeHighFrequencyQualityPlan(frame.leftStripes, config)
         : HighFrequencyQualityPlan {};
-    const bool qualitySignalsActive =
-        highFrequencyQualityPlan.images.size() > 1U &&
-        highFrequencyQualityPlan.images.size() <= static_cast<std::size_t>(kMaxQualityPhaseSteps);
+    const HighFrequencyQualityPlan rightHighFrequencyQualityPlan =
+        needsMatchingQualitySignals
+        ? makeHighFrequencyQualityPlan(frame.rightStripes, config)
+        : HighFrequencyQualityPlan {};
+    const bool leftQualitySignalsActive =
+        leftHighFrequencyQualityPlan.images.size() > 1U &&
+        leftHighFrequencyQualityPlan.images.size() <= static_cast<std::size_t>(kMaxQualityPhaseSteps);
+    const bool rightQualitySignalsActive =
+        rightHighFrequencyQualityPlan.images.size() > 1U &&
+        rightHighFrequencyQualityPlan.images.size() <= static_cast<std::size_t>(kMaxQualityPhaseSteps);
+    const bool matchingQualityFilterActive =
+        needsMatchingQualitySignals && leftQualitySignalsActive && rightQualitySignalsActive;
+    if (needsMatchingQualitySignals && !matchingQualityFilterActive) {
+        result.status = {StatusCode::InputMissing,
+                         "PointCloudReconstructorCuda",
+                         "matching candidate quality filter requires configured high-frequency stripeRequirements and left/right high-frequency stripes"};
+        result.stats.status = result.status;
+        return result;
+    }
     const ImageView* colorInput = nullptr;
     if (needsAuxiliaryColor) {
         colorInput = frame.leftColor.data != nullptr ? &frame.leftColor : &frame.color;
@@ -1257,6 +1499,9 @@ PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseRes
     DeviceBuffer& dQualityInputImages = workspace.qualityInputImages;
     DeviceBuffer& dQualityModulation = workspace.qualityModulation;
     DeviceBuffer& dQualityLightFlags = workspace.qualityLightFlags;
+    DeviceBuffer& dRightQualityInputImages = workspace.rightQualityInputImages;
+    DeviceBuffer& dRightQualityModulation = workspace.rightQualityModulation;
+    DeviceBuffer& dRightQualityLightFlags = workspace.rightQualityLightFlags;
     Status status;
     auto ensureWorkspaceCapacity = [&](DeviceBuffer& buffer,
                                        std::size_t bytes,
@@ -1349,9 +1594,9 @@ PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseRes
             return result;
         }
     }
-    if (qualitySignalsActive) {
+    if (leftQualitySignalsActive) {
         const std::size_t qualityImageBytes = static_cast<std::size_t>(pixelCount) *
-            highFrequencyQualityPlan.images.size();
+            leftHighFrequencyQualityPlan.images.size();
         status = ensureWorkspaceCapacity(
             dQualityInputImages, qualityImageBytes, "cudaMalloc quality input images");
         if (!status.ok()) {
@@ -1367,6 +1612,30 @@ PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseRes
         }
         status = ensureWorkspaceCapacity(
             dQualityLightFlags, static_cast<std::size_t>(pixelCount), "cudaMalloc quality light flags");
+        if (!status.ok()) {
+            result.status = status;
+            result.stats.status = status;
+            return result;
+        }
+    }
+    if (rightQualitySignalsActive) {
+        const std::size_t qualityImageBytes = static_cast<std::size_t>(pixelCount) *
+            rightHighFrequencyQualityPlan.images.size();
+        status = ensureWorkspaceCapacity(
+            dRightQualityInputImages, qualityImageBytes, "cudaMalloc right quality input images");
+        if (!status.ok()) {
+            result.status = status;
+            result.stats.status = status;
+            return result;
+        }
+        status = ensureWorkspaceCapacity(dRightQualityModulation, phaseBytes, "cudaMalloc right quality modulation");
+        if (!status.ok()) {
+            result.status = status;
+            result.stats.status = status;
+            return result;
+        }
+        status = ensureWorkspaceCapacity(
+            dRightQualityLightFlags, static_cast<std::size_t>(pixelCount), "cudaMalloc right quality light flags");
         if (!status.ok()) {
             result.status = status;
             result.stats.status = status;
@@ -1393,13 +1662,18 @@ PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseRes
         return result;
     }
     status = ensureWorkspaceCapacity(
-        dMatchingRejectionCounts, sizeof(unsigned int) * 2, "cudaMalloc matching rejection counters");
+        dMatchingRejectionCounts,
+        sizeof(unsigned int) * kMatchingCounterCount,
+        "cudaMalloc matching rejection counters");
     if (!status.ok()) {
         result.status = status;
         result.stats.status = status;
         return result;
     }
-    status = cudaStatus(cudaMemset(dMatchingRejectionCounts.ptr, 0, sizeof(unsigned int) * 2), "cudaMemset matching rejection counters");
+    status = cudaStatus(cudaMemset(dMatchingRejectionCounts.ptr,
+                                   0,
+                                   sizeof(unsigned int) * kMatchingCounterCount),
+                        "cudaMemset matching rejection counters");
     if (!status.ok()) {
         result.status = status;
         result.stats.status = status;
@@ -1451,10 +1725,10 @@ PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseRes
             return result;
         }
     }
-    if (qualitySignalsActive) {
+    if (leftQualitySignalsActive) {
         const std::size_t imageBytes = static_cast<std::size_t>(pixelCount);
-        for (std::size_t step = 0; step < highFrequencyQualityPlan.images.size(); ++step) {
-            const ImageView& image = *highFrequencyQualityPlan.images[step];
+        for (std::size_t step = 0; step < leftHighFrequencyQualityPlan.images.size(); ++step) {
+            const ImageView& image = *leftHighFrequencyQualityPlan.images[step];
             if (image.data == nullptr || image.width != width || image.height != height ||
                 image.channels != 1 || image.elementType != ImageElementType::UInt8 ||
                 image.strideBytes < width) {
@@ -1480,6 +1754,35 @@ PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseRes
             }
         }
     }
+    if (rightQualitySignalsActive) {
+        const std::size_t imageBytes = static_cast<std::size_t>(pixelCount);
+        for (std::size_t step = 0; step < rightHighFrequencyQualityPlan.images.size(); ++step) {
+            const ImageView& image = *rightHighFrequencyQualityPlan.images[step];
+            if (image.data == nullptr || image.width != width || image.height != height ||
+                image.channels != 1 || image.elementType != ImageElementType::UInt8 ||
+                image.strideBytes < width) {
+                result.status = {StatusCode::InputTypeUnsupported,
+                                 "PointCloudReconstructorCuda",
+                                 "matching candidate quality requires packed UInt8 right high-frequency stripes"};
+                result.stats.status = result.status;
+                return result;
+            }
+            status = cudaStatus(cudaMemcpy2D(
+                                    static_cast<unsigned char*>(dRightQualityInputImages.ptr) + step * imageBytes,
+                                    static_cast<std::size_t>(width),
+                                    image.data,
+                                    static_cast<std::size_t>(image.strideBytes),
+                                    static_cast<std::size_t>(width),
+                                    static_cast<std::size_t>(height),
+                                    cudaMemcpyHostToDevice),
+                                "cudaMemcpy2D right quality stripe H2D");
+            if (!status.ok()) {
+                result.status = status;
+                result.stats.status = status;
+                return result;
+            }
+        }
+    }
     hostToDeviceMs = elapsedMilliseconds(timingStart);
 
     timingStart = SteadyClock::now();
@@ -1488,16 +1791,17 @@ PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseRes
     const float* leftPhaseForMatching = dLeft.as<const float>();
     const float* rightPhaseForMatching = dRight.as<const float>();
     const bool rectificationAvailable = hasRectificationCalibration(calibration);
-    RemapCalibration leftRemap;
+    RemapCalibration leftRemap {};
+    RemapCalibration rightRemap {};
     if (rectificationAvailable) {
         leftRemap = makeRemapCalibration(calibration.leftIntrinsics,
                                          calibration.leftDistortion,
                                          calibration.rectificationLeft,
                                          calibration.projectionLeft);
-        const RemapCalibration rightRemap = makeRemapCalibration(calibration.rightIntrinsics,
-                                                                 calibration.rightDistortion,
-                                                                 calibration.rectificationRight,
-                                                                 calibration.projectionRight);
+        rightRemap = makeRemapCalibration(calibration.rightIntrinsics,
+                                          calibration.rightDistortion,
+                                          calibration.rectificationRight,
+                                          calibration.projectionRight);
         // Production phase is already rectified before atan2/unwrap. Keep the
         // old post-phase remap only for direct sensor-domain callers and tests.
         if (unwrappedPhase.coordinateDomain == PhaseCoordinateDomain::Sensor) {
@@ -1519,12 +1823,12 @@ PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseRes
             rightPhaseForMatching = dRightRectified.as<const float>();
         }
     }
-    if (qualitySignalsActive) {
+    if (leftQualitySignalsActive) {
         QualityPhaseWeights weights;
-        weights.stepCount = static_cast<int>(highFrequencyQualityPlan.images.size());
+        weights.stepCount = static_cast<int>(leftHighFrequencyQualityPlan.images.size());
         for (int step = 0; step < weights.stepCount; ++step) {
-            weights.sinWeights[step] = highFrequencyQualityPlan.sinWeights[static_cast<std::size_t>(step)];
-            weights.cosWeights[step] = highFrequencyQualityPlan.cosWeights[static_cast<std::size_t>(step)];
+            weights.sinWeights[step] = leftHighFrequencyQualityPlan.sinWeights[static_cast<std::size_t>(step)];
+            weights.cosWeights[step] = leftHighFrequencyQualityPlan.cosWeights[static_cast<std::size_t>(step)];
         }
         computeRectifiedHighFrequencyQualityKernel<<<grid, block>>>(
             dQualityInputImages.as<const unsigned char>(),
@@ -1536,6 +1840,29 @@ PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseRes
             weights,
             rectificationAvailable ? 1 : 0);
         status = cudaStatus(cudaGetLastError(), "computeRectifiedHighFrequencyQualityKernel launch");
+        if (!status.ok()) {
+            result.status = status;
+            result.stats.status = status;
+            return result;
+        }
+    }
+    if (rightQualitySignalsActive) {
+        QualityPhaseWeights weights;
+        weights.stepCount = static_cast<int>(rightHighFrequencyQualityPlan.images.size());
+        for (int step = 0; step < weights.stepCount; ++step) {
+            weights.sinWeights[step] = rightHighFrequencyQualityPlan.sinWeights[static_cast<std::size_t>(step)];
+            weights.cosWeights[step] = rightHighFrequencyQualityPlan.cosWeights[static_cast<std::size_t>(step)];
+        }
+        computeRectifiedHighFrequencyQualityKernel<<<grid, block>>>(
+            dRightQualityInputImages.as<const unsigned char>(),
+            dRightQualityModulation.as<float>(),
+            dRightQualityLightFlags.as<unsigned char>(),
+            width,
+            height,
+            rightRemap,
+            weights,
+            rectificationAvailable ? 1 : 0);
+        status = cudaStatus(cudaGetLastError(), "computeRectifiedHighFrequencyQualityKernel right launch");
         if (!status.ok()) {
             result.status = status;
             result.stats.status = status;
@@ -1605,10 +1932,33 @@ PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseRes
         }
     }
 
+    // Keep the Legacy disparity hot-path sampling contract here: phase maps
+    // are fetched through 2D textures with linear filtering, clamp addressing,
+    // and unnormalized coordinates. Gauge-block diagnostics showed that the
+    // phase maps are already close; the remaining RMS gap is in matching.
+    PhaseTexture2D leftPhaseTexture;
+    status = leftPhaseTexture.create(leftPhaseForMatching, width, height, "cudaCreateTextureObject left phase");
+    if (!status.ok()) {
+        result.status = status;
+        result.stats.status = status;
+        return result;
+    }
+    PhaseTexture2D rightPhaseTexture;
+    status = rightPhaseTexture.create(rightPhaseForMatching, width, height, "cudaCreateTextureObject right phase");
+    if (!status.ok()) {
+        result.status = status;
+        result.stats.status = status;
+        return result;
+    }
+
     const DisparityWindow disparityWindow = makeDisparityWindow(calibration, config, width);
-    computeDisparityKernel<<<grid, block>>>(leftPhaseForMatching,
-                                            rightPhaseForMatching,
+    computeDisparityKernel<<<grid, block>>>(leftPhaseTexture.get(),
+                                            rightPhaseTexture.get(),
                                             validMaskForMatching,
+                                            matchingQualityFilterActive ? dQualityModulation.as<const float>() : nullptr,
+                                            matchingQualityFilterActive ? dQualityLightFlags.as<const unsigned char>() : nullptr,
+                                            matchingQualityFilterActive ? dRightQualityModulation.as<const float>() : nullptr,
+                                            matchingQualityFilterActive ? dRightQualityLightFlags.as<const unsigned char>() : nullptr,
                                             dDisparity.as<float>(),
                                             dScores.as<float>(),
                                             dCandidateCounts.as<int>(),
@@ -1627,6 +1977,12 @@ PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseRes
                                             config.matchingRightPhaseMonotonicRadius,
                                             static_cast<float>(config.matchingRightPhaseMinSlope),
                                             config.disparitySubpixelEnabled ? 1 : 0,
+                                            config.matchingRejectOnSubpixelFailure ? 1 : 0,
+                                            matchingQualityFilterActive ? 1 : 0,
+                                            static_cast<float>(config.matchingCandidateMinModulation),
+                                            config.matchingCandidateRejectSaturation ? 1 : 0,
+                                            config.matchingCandidateRejectLowLight ? 1 : 0,
+                                            materializeMatchingDiagnostics ? 1 : 0,
                                             dMatchingRejectionCounts.as<unsigned int>());
     status = cudaStatus(cudaGetLastError(), "computeDisparityKernel launch");
     if (!status.ok()) {
@@ -1730,8 +2086,11 @@ PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseRes
     kernelMs = elapsedMilliseconds(timingStart);
 
     timingStart = SteadyClock::now();
+    std::vector<HostFloat3> rawStagePoints;
+    std::vector<HostFloat3> filterInputStagePoints;
     std::vector<HostFloat3> filteredPoints;
     std::vector<HostFloat3> normals;
+    std::vector<float> debugDisparity;
     std::vector<float> matchScores;
     std::vector<int> candidateCounts;
     std::vector<float> qualityModulation;
@@ -1742,11 +2101,16 @@ PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseRes
         filteredPoints.resize(static_cast<std::size_t>(pixelCount));
         normals.resize(static_cast<std::size_t>(pixelCount));
     }
-    if (materializeQualityGrid) {
+    if (materializeStageVertices) {
+        rawStagePoints.resize(static_cast<std::size_t>(pixelCount));
+        filterInputStagePoints.resize(static_cast<std::size_t>(pixelCount));
+        debugDisparity.resize(static_cast<std::size_t>(pixelCount));
+    }
+    if (materializeMatchingSignals) {
         matchScores.resize(static_cast<std::size_t>(pixelCount));
         candidateCounts.resize(static_cast<std::size_t>(pixelCount));
     }
-    if (qualitySignalsActive) {
+    if (leftQualitySignalsActive) {
         qualityModulation.resize(static_cast<std::size_t>(pixelCount));
         qualityLightFlags.resize(static_cast<std::size_t>(pixelCount));
     }
@@ -1756,11 +2120,31 @@ PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseRes
     if (materializeColor) {
         rectifiedColor.resize(colorBytes);
     }
-    std::array<unsigned int, 2> matchingRejectionCounts = {};
+    std::array<unsigned int, kMatchingCounterCount> matchingRejectionCounts = {};
     std::array<unsigned int, 3> pointCounts = {};
     hostAllocationMs = elapsedMilliseconds(timingStart);
 
     timingStart = SteadyClock::now();
+    if (materializeStageVertices) {
+        status = cudaStatus(cudaMemcpy(debugDisparity.data(), disparityForReproject, phaseBytes, cudaMemcpyDeviceToHost), "cudaMemcpy debug disparity D2H");
+        if (!status.ok()) {
+            result.status = status;
+            result.stats.status = status;
+            return result;
+        }
+        status = cudaStatus(cudaMemcpy(rawStagePoints.data(), dRawPoints.ptr, pointBytes, cudaMemcpyDeviceToHost), "cudaMemcpy raw stage points D2H");
+        if (!status.ok()) {
+            result.status = status;
+            result.stats.status = status;
+            return result;
+        }
+        status = cudaStatus(cudaMemcpy(filterInputStagePoints.data(), pointsBeforeFilter, pointBytes, cudaMemcpyDeviceToHost), "cudaMemcpy filter-input stage points D2H");
+        if (!status.ok()) {
+            result.status = status;
+            result.stats.status = status;
+            return result;
+        }
+    }
     if (materializePointCloud) {
         status = cudaStatus(cudaMemcpy(filteredPoints.data(), dFilteredPoints.ptr, pointBytes, cudaMemcpyDeviceToHost), "cudaMemcpy filtered points D2H");
         if (!status.ok()) {
@@ -1775,7 +2159,7 @@ PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseRes
             return result;
         }
     }
-    if (materializeQualityGrid) {
+    if (materializeMatchingSignals) {
         status = cudaStatus(cudaMemcpy(matchScores.data(), dScores.ptr, phaseBytes, cudaMemcpyDeviceToHost), "cudaMemcpy match scores D2H");
         if (!status.ok()) {
             result.status = status;
@@ -1789,7 +2173,7 @@ PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseRes
             return result;
         }
     }
-    if (qualitySignalsActive) {
+    if (leftQualitySignalsActive) {
         status = cudaStatus(cudaMemcpy(qualityModulation.data(),
                                        dQualityModulation.ptr,
                                        phaseBytes,
@@ -1874,15 +2258,85 @@ PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseRes
     result.rawValidPointCount = pointCounts[0];
     result.smoothedGridValidPointCount = pointCounts[1];
     result.filteredGridValidPointCount = pointCounts[2];
+    result.filterDeletedPointCount =
+        result.smoothedGridValidPointCount > result.filteredGridValidPointCount
+            ? result.smoothedGridValidPointCount - result.filteredGridValidPointCount
+            : 0U;
     result.normalsComputed = computeNormals;
-    result.leftRightRejectedPointCount = matchingRejectionCounts[0];
-    result.rightPhaseMonotonicRejectedPointCount = matchingRejectionCounts[1];
+    result.leftRightRejectedPointCount = matchingRejectionCounts[kMatchingCounterLeftRightRejected];
+    result.rightPhaseMonotonicRejectedPointCount =
+        matchingRejectionCounts[kMatchingCounterRightPhaseMonotonicRejected];
     result.clear255RejectedPixelCount = clear255RejectedCount;
     result.semanticMaskApplied = clear255Active;
     result.matchingSummary =
         "matchingLeftRightRejected=" + std::to_string(result.leftRightRejectedPointCount) +
         ",matchingRightPhaseMonotonicRejected=" + std::to_string(result.rightPhaseMonotonicRejectedPointCount) +
-        ",clear255RejectedPixels=" + std::to_string(result.clear255RejectedPixelCount);
+        ",clear255RejectedPixels=" + std::to_string(result.clear255RejectedPixelCount) +
+        ",matchingQualityFilterActive=" + std::string(matchingQualityFilterActive ? "true" : "false");
+
+    if (materializeMatchingDiagnostics) {
+        PointCloudMatchingDiagnostics diagnostics;
+        diagnostics.enabled = true;
+        diagnostics.leftPhaseValidPixelCount = matchingRejectionCounts[kMatchingCounterLeftPhaseValid];
+        diagnostics.thresholdRejectedPixelCount = matchingRejectionCounts[kMatchingCounterThresholdRejected];
+        diagnostics.uniquenessRejectedPixelCount = matchingRejectionCounts[kMatchingCounterUniquenessRejected];
+        diagnostics.acceptedMatchPixelCount = matchingRejectionCounts[kMatchingCounterAccepted];
+        diagnostics.leftRightRejectedPointCount = result.leftRightRejectedPointCount;
+        diagnostics.rightPhaseMonotonicRejectedPointCount = result.rightPhaseMonotonicRejectedPointCount;
+        diagnostics.subpixelSuccessCount = matchingRejectionCounts[kMatchingCounterSubpixelSuccess];
+        diagnostics.subpixelFallbackCount = matchingRejectionCounts[kMatchingCounterSubpixelFallback];
+        diagnostics.leftQualityRejectedPixelCount = matchingRejectionCounts[kMatchingCounterLeftQualityRejected];
+        diagnostics.rightCandidateQualitySkippedCount = matchingRejectionCounts[kMatchingCounterRightQualitySkipped];
+        diagnostics.subpixelFailureRejectedCount = matchingRejectionCounts[kMatchingCounterSubpixelFailureRejected];
+
+        std::size_t candidateSum = 0U;
+        std::size_t acceptedCostCount = 0U;
+        double acceptedCostSum = 0.0;
+        for (std::size_t idx = 0; idx < candidateCounts.size(); ++idx) {
+            const int candidates = candidateCounts[idx];
+            if (candidates > 0) {
+                ++diagnostics.pixelsWithNearCandidates;
+                candidateSum += static_cast<std::size_t>(candidates);
+                diagnostics.maxNearCandidateCount = std::max(
+                    diagnostics.maxNearCandidateCount, static_cast<std::size_t>(candidates));
+                if (candidates > 1) {
+                    ++diagnostics.ambiguousCandidatePixelCount;
+                }
+            }
+            if (idx < matchScores.size() &&
+                matchScores[idx] >= 0.0F &&
+                matchScores[idx] < static_cast<float>(config.phaseDiffThreshold)) {
+                ++acceptedCostCount;
+                acceptedCostSum += static_cast<double>(matchScores[idx]);
+                diagnostics.maxAcceptedMatchCost =
+                    std::max(diagnostics.maxAcceptedMatchCost, static_cast<double>(matchScores[idx]));
+            }
+        }
+        if (diagnostics.pixelsWithNearCandidates > 0U) {
+            diagnostics.meanNearCandidateCount =
+                static_cast<double>(candidateSum) /
+                static_cast<double>(diagnostics.pixelsWithNearCandidates);
+        }
+        if (acceptedCostCount > 0U) {
+            diagnostics.meanAcceptedMatchCost =
+                acceptedCostSum / static_cast<double>(acceptedCostCount);
+        }
+        result.matchingDiagnostics = diagnostics;
+        result.matchingDiagnosticsCsv = formatMatchingDiagnosticsCsv(diagnostics);
+        result.matchingSummary +=
+            ",matchingDiagnosticsEnabled=true" +
+            std::string(",leftPhaseValid=") + std::to_string(diagnostics.leftPhaseValidPixelCount) +
+            ",thresholdRejected=" + std::to_string(diagnostics.thresholdRejectedPixelCount) +
+            ",uniquenessRejected=" + std::to_string(diagnostics.uniquenessRejectedPixelCount) +
+            ",acceptedMatches=" + std::to_string(diagnostics.acceptedMatchPixelCount) +
+            ",subpixelSuccess=" + std::to_string(diagnostics.subpixelSuccessCount) +
+            ",subpixelFallback=" + std::to_string(diagnostics.subpixelFallbackCount) +
+            ",leftQualityRejected=" + std::to_string(diagnostics.leftQualityRejectedPixelCount) +
+            ",rightCandidateQualitySkipped=" + std::to_string(diagnostics.rightCandidateQualitySkippedCount) +
+            ",subpixelFailureRejected=" + std::to_string(diagnostics.subpixelFailureRejectedCount);
+    } else {
+        result.matchingSummary += ",matchingDiagnosticsEnabled=false";
+    }
 
     if (materializeQualityGrid) {
         result.gridPoints.assign(static_cast<std::size_t>(pixelCount), {});
@@ -1890,7 +2344,29 @@ PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseRes
     if (materializeVertices) {
         result.vertices.reserve(result.filteredGridValidPointCount);
     }
+    if (materializeStageVertices) {
+        result.rawStageVertices.reserve(result.rawValidPointCount);
+        result.filterInputStageVertices.reserve(result.smoothedGridValidPointCount);
+        result.filterDeletedStageVertices.reserve(result.filterDeletedPointCount);
+    }
     for (std::size_t idx = 0; idx < filteredPoints.size(); ++idx) {
+        if (materializeStageVertices) {
+            const bool rawValid = isValidPoint(rawStagePoints[idx]);
+            const bool filterInputValid = isValidPoint(filterInputStagePoints[idx]);
+            const bool filteredValid = isValidPoint(filteredPoints[idx]);
+            if (rawValid) {
+                result.rawStageVertices.push_back(
+                    makeDiagnosticVertex(rawStagePoints[idx], idx, width, 192U, 192U, 192U));
+            }
+            if (filterInputValid) {
+                result.filterInputStageVertices.push_back(
+                    makeDiagnosticVertex(filterInputStagePoints[idx], idx, width, 0U, 112U, 192U));
+            }
+            if (filterInputValid && !filteredValid) {
+                result.filterDeletedStageVertices.push_back(
+                    makeDiagnosticVertex(filterInputStagePoints[idx], idx, width, 220U, 40U, 40U));
+            }
+        }
         if (materializeQualityGrid) {
             PointCloudGridPoint& gridPoint = result.gridPoints[idx];
             gridPoint.x = filteredPoints[idx].x;
@@ -1902,7 +2378,7 @@ PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseRes
             gridPoint.matchCost = matchScores[idx];
             gridPoint.candidateCount = candidateCounts[idx];
             gridPoint.semanticBackground = !clear255Mask.empty() && clear255Mask[idx] == 0U;
-            if (qualitySignalsActive) {
+            if (leftQualitySignalsActive) {
                 gridPoint.modulation = qualityModulation[idx];
                 gridPoint.highFrequencySaturated = (qualityLightFlags[idx] & 1U) != 0U;
                 gridPoint.highFrequencyLowLight = (qualityLightFlags[idx] & (2U | 4U)) != 0U;
@@ -1937,6 +2413,15 @@ PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseRes
     if (materializeColor) {
         result.rectifiedColorBgr = std::move(rectifiedColor);
     }
+    if (materializeStageVertices) {
+        result.debugDisparity = std::move(debugDisparity);
+        result.debugMatchScores = matchScores;
+        result.debugCandidateCounts = candidateCounts;
+        result.debugDepthMap.assign(static_cast<std::size_t>(pixelCount), 0.0F);
+        for (std::size_t idx = 0; idx < filteredPoints.size(); ++idx) {
+            result.debugDepthMap[idx] = isValidPoint(filteredPoints[idx]) ? filteredPoints[idx].z : 0.0F;
+        }
+    }
     materializeMs = elapsedMilliseconds(timingStart);
     result.pointCloudStageSummary =
         "rawValid=" + std::to_string(result.rawValidPointCount) +
@@ -1949,6 +2434,11 @@ PointCloudReconstructionResult reconstructPointCloudCuda(const UnwrappedPhaseRes
         ",colorTextureApplied=" + std::string(materializeColor ? "true" : "false") +
         ",verticesMaterialized=" + std::string(materializeVertices ? "true" : "false") +
         ",qualityGridMaterialized=" + std::string(materializeQualityGrid ? "true" : "false") +
+        ",matchingDiagnosticsMaterialized=" +
+        std::string(materializeMatchingDiagnostics ? "true" : "false") +
+        ",matchingQualityFilterActive=" + std::string(matchingQualityFilterActive ? "true" : "false") +
+        ",stageVerticesMaterialized=" + std::string(materializeStageVertices ? "true" : "false") +
+        ",filterDeletedValid=" + std::to_string(result.filterDeletedPointCount) +
         ",clear255Active=" + std::string(clear255Active ? "true" : "false") +
         ",clear255RejectedPixels=" + std::to_string(clear255RejectedCount) +
         ",deviceAllocationCount=" + std::to_string(deviceAllocationCount) +

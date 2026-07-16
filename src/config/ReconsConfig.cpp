@@ -69,6 +69,11 @@ Status parseReconsConfigObject(const JsonObject& json, ReconsConfig parsed, Reco
     (void)json.getBool("matchingRightPhaseMonotonicEnabled", parsed.matchingRightPhaseMonotonicEnabled);
     (void)json.getInt("matchingRightPhaseMonotonicRadius", parsed.matchingRightPhaseMonotonicRadius);
     (void)json.getDouble("matchingRightPhaseMinSlope", parsed.matchingRightPhaseMinSlope);
+    (void)json.getBool("matchingRejectOnSubpixelFailure", parsed.matchingRejectOnSubpixelFailure);
+    (void)json.getBool("matchingCandidateQualityFilterEnabled", parsed.matchingCandidateQualityFilterEnabled);
+    (void)json.getDouble("matchingCandidateMinModulation", parsed.matchingCandidateMinModulation);
+    (void)json.getBool("matchingCandidateRejectSaturation", parsed.matchingCandidateRejectSaturation);
+    (void)json.getBool("matchingCandidateRejectLowLight", parsed.matchingCandidateRejectLowLight);
     (void)json.getBool("disparitySubpixelEnabled", parsed.disparitySubpixelEnabled);
     (void)json.getBool("disparityLocalConsistencyEnabled", parsed.disparityLocalConsistencyEnabled);
     (void)json.getDouble("disparityLocalConsistencyThreshold", parsed.disparityLocalConsistencyThreshold);
@@ -99,6 +104,9 @@ Status parseReconsConfigObject(const JsonObject& json, ReconsConfig parsed, Reco
     (void)json.getBool("aiEnabled", parsed.aiEnabled);
     (void)json.getBool("debugMapOutputEnabled", parsed.debugMapOutputEnabled);
     (void)json.getBool("saveOutputs", parsed.saveOutputs);
+    (void)json.getBool("phaseDiagnosticsEnabled", parsed.phaseDiagnosticsEnabled);
+    (void)json.getBool("matchingDiagnosticsEnabled", parsed.matchingDiagnosticsEnabled);
+    (void)json.getBool("pointCloudStageDiagnosticsEnabled", parsed.pointCloudStageDiagnosticsEnabled);
     (void)json.getBool("saveStagePointClouds", parsed.saveStagePointClouds);
     (void)json.getString("calibResultPath", parsed.calibResultPath);
 
@@ -165,6 +173,9 @@ Status parseReconsConfigObject(const JsonObject& json, ReconsConfig parsed, Reco
     if (parsed.matchingRightPhaseMonotonicRadius < 1 || parsed.matchingRightPhaseMonotonicRadius > 5 ||
         parsed.matchingRightPhaseMinSlope < 0.0) {
         return {StatusCode::ConfigInvalidValue, "ReconsConfig", "right phase monotonic radius/slope are invalid"};
+    }
+    if (parsed.matchingCandidateMinModulation < 0.0) {
+        return {StatusCode::ConfigInvalidValue, "ReconsConfig", "matchingCandidateMinModulation must be non-negative"};
     }
     if (parsed.disparityLocalConsistencyRadius < 0 || parsed.disparityLocalConsistencyMinSupport < 0) {
         return {StatusCode::ConfigInvalidValue, "ReconsConfig", "disparity local consistency radius/support must be non-negative"};
@@ -298,6 +309,10 @@ std::string summarizeConfig(const ReconsConfig& config)
         << ", matchingRightPhaseMonotonicEnabled=" << (config.matchingRightPhaseMonotonicEnabled ? "true" : "false")
         << ", matchingRightPhaseMonotonicRadius=" << config.matchingRightPhaseMonotonicRadius
         << ", matchingRightPhaseMinSlope=" << config.matchingRightPhaseMinSlope
+        << ", matchingRejectOnSubpixelFailure=" << (config.matchingRejectOnSubpixelFailure ? "true" : "false")
+        << ", matchingCandidateQualityFilterEnabled="
+        << (config.matchingCandidateQualityFilterEnabled ? "true" : "false")
+        << ", matchingCandidateMinModulation=" << config.matchingCandidateMinModulation
         << ", disparitySubpixelEnabled=" << (config.disparitySubpixelEnabled ? "true" : "false")
         << ", disparityLocalConsistencyEnabled=" << (config.disparityLocalConsistencyEnabled ? "true" : "false")
         << ", pointCloudSmoothingEnabled=" << (config.pointCloudSmoothingEnabled ? "true" : "false")
@@ -323,6 +338,10 @@ std::string summarizeConfig(const ReconsConfig& config)
         << ", aiEnabled=" << (config.aiEnabled ? "true" : "false")
         << ", debugMapOutputEnabled=" << (config.debugMapOutputEnabled ? "true" : "false")
         << ", saveOutputs=" << (config.saveOutputs ? "true" : "false")
+        << ", phaseDiagnosticsEnabled=" << (config.phaseDiagnosticsEnabled ? "true" : "false")
+        << ", matchingDiagnosticsEnabled=" << (config.matchingDiagnosticsEnabled ? "true" : "false")
+        << ", pointCloudStageDiagnosticsEnabled="
+        << (config.pointCloudStageDiagnosticsEnabled ? "true" : "false")
         << ", saveStagePointClouds=" << (config.saveStagePointClouds ? "true" : "false");
     if (!config.calibResultPath.empty()) {
         out << ", calibResultPath=" << config.calibResultPath;

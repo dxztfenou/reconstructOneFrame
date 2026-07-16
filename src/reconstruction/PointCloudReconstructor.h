@@ -43,6 +43,29 @@ struct PointCloudGridPoint {
 struct PointCloudOutputOptions {
     bool materializeVertices = true;
     bool materializeQualityGrid = true;
+    bool materializeMatchingDiagnostics = false;
+    bool materializeStageVertices = false;
+};
+
+struct PointCloudMatchingDiagnostics {
+    bool enabled = false;
+    std::size_t leftPhaseValidPixelCount = 0;
+    std::size_t thresholdRejectedPixelCount = 0;
+    std::size_t uniquenessRejectedPixelCount = 0;
+    std::size_t acceptedMatchPixelCount = 0;
+    std::size_t leftRightRejectedPointCount = 0;
+    std::size_t rightPhaseMonotonicRejectedPointCount = 0;
+    std::size_t leftQualityRejectedPixelCount = 0;
+    std::size_t rightCandidateQualitySkippedCount = 0;
+    std::size_t subpixelFailureRejectedCount = 0;
+    std::size_t subpixelSuccessCount = 0;
+    std::size_t subpixelFallbackCount = 0;
+    std::size_t pixelsWithNearCandidates = 0;
+    std::size_t ambiguousCandidatePixelCount = 0;
+    std::size_t maxNearCandidateCount = 0;
+    double meanNearCandidateCount = 0.0;
+    double meanAcceptedMatchCost = 0.0;
+    double maxAcceptedMatchCost = 0.0;
 };
 
 struct PointCloudReconstructionResult {
@@ -57,13 +80,23 @@ struct PointCloudReconstructionResult {
     std::size_t clear255RejectedPixelCount = 0;
     bool semanticMaskApplied = false;
     std::string matchingSummary;
+    PointCloudMatchingDiagnostics matchingDiagnostics;
+    std::string matchingDiagnosticsCsv;
     std::vector<PointCloudGridPoint> gridPoints;
     std::vector<PointCloudVertex> vertices;
     // Full rectified BGR preview, independent of point-cloud validity.
     std::vector<std::uint8_t> rectifiedColorBgr;
     std::size_t smoothedGridValidPointCount = 0;
+    std::size_t filterDeletedPointCount = 0;
     std::string pointCloudStageSummary;
     bool normalsComputed = false;
+    std::vector<PointCloudVertex> rawStageVertices;
+    std::vector<PointCloudVertex> filterInputStageVertices;
+    std::vector<PointCloudVertex> filterDeletedStageVertices;
+    std::vector<float> debugDisparity;
+    std::vector<float> debugMatchScores;
+    std::vector<int> debugCandidateCounts;
+    std::vector<float> debugDepthMap;
 };
 
 class PointCloudCudaWorkspace {

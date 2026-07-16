@@ -37,7 +37,7 @@ struct OwnedStripeFrame {
     std::vector<std::vector<std::uint8_t>> storage;
 };
 
-OwnedStripeFrame makeSpatialPhaseFrame(const ReconsConfig& config)
+OwnedStripeFrame makeSpatialPhaseFrame(const ReconsConfig& config, double amplitude = 70.0)
 {
     constexpr int width = 4;
     constexpr int height = 4;
@@ -63,7 +63,7 @@ OwnedStripeFrame makeSpatialPhaseFrame(const ReconsConfig& config)
                             (camera == CameraSide::Left ? 0.0 : 0.11);
                         const double stepAngle = 2.0 * pi * static_cast<double>(step) /
                             static_cast<double>(requirement.requiredPhaseSteps);
-                        const int value = static_cast<int>(std::lround(128.0 + 70.0 * std::cos(spatialPhase + stepAngle)));
+                        const int value = static_cast<int>(std::lround(128.0 + amplitude * std::cos(spatialPhase + stepAngle)));
                         pixels[static_cast<std::size_t>(y * width + x)] =
                             static_cast<std::uint8_t>(std::clamp(value, 0, 255));
                     }
@@ -84,6 +84,15 @@ OwnedStripeFrame makeSpatialPhaseFrame(const ReconsConfig& config)
         }
     }
     return owned;
+}
+
+void forceConstantPixel(OwnedStripeFrame& frame, std::size_t pixelIndex, std::uint8_t value)
+{
+    for (std::vector<std::uint8_t>& image : frame.storage) {
+        if (pixelIndex < image.size()) {
+            image[pixelIndex] = value;
+        }
+    }
 }
 
 CalibrationModel makeOnePixelShiftCalibration()
@@ -137,6 +146,18 @@ int main()
     OwnedStripeFrame spatialFrame = makeSpatialPhaseFrame(spatialConfig);
     WrappedPhaseResult sensor = computeWrappedPhaseCuda(spatialFrame.frame, spatialConfig);
     require(sensor.status.ok(), "expected sensor-domain CUDA phase");
+    OwnedStripeFrame lowContrastFrame = makeSpatialPhaseFrame(spatialConfig);
+    forceConstantPixel(lowContrastFrame, 5U, 128U);
+    WrappedPhaseResult lowContrast = computeWrappedPhaseCuda(lowContrastFrame.frame, spatialConfig);
+    require(lowContrast.status.ok(), "expected low-contrast CUDA phase to finish");
+    require(!lowContrast.frequencies.empty(), "expected low-contrast frequency outputs");
+    require(lowContrast.frequencies.front().validPixelCount == 15,
+            "expected Bmin gate to invalidate only the low-modulation pixel");
+    require(std::isnan(lowContrast.frequencies.front().phase[5]),
+            "expected Bmin gate to write NaN for low-modulation wrapped phase");
+    require(lowContrast.frequencies.front().modulation.size() > 5U &&
+                lowContrast.frequencies.front().modulation[5] < 1.0F,
+            "expected low modulation to remain materialized for diagnostics");
     CalibrationModel shiftCalibration = makeOnePixelShiftCalibration();
     WrappedPhaseResult rectified = computeWrappedPhaseCuda(spatialFrame.frame, spatialConfig, shiftCalibration);
     require(rectified.status.ok(), "expected rectified CUDA phase");

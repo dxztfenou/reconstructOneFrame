@@ -176,6 +176,11 @@ __global__ void medianFilterKernel(const float* input,
     output[idx] = values[count / 2];
 }
 
+bool medianFilterEnabled(int kernelSize)
+{
+    return kernelSize > 1 && kernelSize <= 15;
+}
+
 const WrappedPhaseFrequencyResult* findWrapped(const WrappedPhaseResult& wrappedPhase,
                                                CameraSide camera,
                                                int frequencyIndex)
@@ -332,9 +337,29 @@ Status computeOneCameraCuda(const WrappedPhaseResult& wrappedPhase,
         return status;
     }
 
+    const float* abs23ForFinal = static_cast<const float*>(dAbs23.ptr);
+    if (medianFilterEnabled(config.medianKernelSize)) {
+        const dim3 medianBlock(16, 16);
+        const dim3 medianGrid((width + medianBlock.x - 1) / medianBlock.x,
+                              (height + medianBlock.y - 1) / medianBlock.y);
+        // Legacy filters the intermediate PH23/PH123 absolute phase before it
+        // drives the high-frequency final unwrap. This is intentionally
+        // separate from the optional final-phase median switch.
+        medianFilterKernel<<<medianGrid, medianBlock>>>(static_cast<const float*>(dAbs23.ptr),
+                                                        static_cast<float*>(dAbsFiltered.ptr),
+                                                        width,
+                                                        height,
+                                                        config.medianKernelSize);
+        status = cudaStatus(cudaGetLastError(), "medianFilterKernel abs23 launch");
+        if (!status.ok()) {
+            return status;
+        }
+        abs23ForFinal = static_cast<const float*>(dAbsFiltered.ptr);
+    }
+
     const float finalRate = static_cast<float>(config.freqSeries[2]) / static_cast<float>(config.freq23);
     computeAbsPhaseKernel<<<gridSize, blockSize>>>(static_cast<const float*>(dPhi2.ptr),
-                                                   static_cast<const float*>(dAbs23.ptr),
+                                                   abs23ForFinal,
                                                    finalRate,
                                                    useResidualGate,
                                                    static_cast<float>(config.phaseUnwrapFinalResidualThreshold),
@@ -346,7 +371,7 @@ Status computeOneCameraCuda(const WrappedPhaseResult& wrappedPhase,
     }
 
     const float* finalDevice = static_cast<const float*>(dAbs.ptr);
-    if (config.phaseFinalMedianFilterEnabled && config.medianKernelSize > 1 && config.medianKernelSize <= 15) {
+    if (config.phaseFinalMedianFilterEnabled && medianFilterEnabled(config.medianKernelSize)) {
         dim3 block(16, 16);
         dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
         medianFilterKernel<<<grid, block>>>(static_cast<const float*>(dAbs.ptr),

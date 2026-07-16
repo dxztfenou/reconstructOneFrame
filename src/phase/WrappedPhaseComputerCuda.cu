@@ -53,6 +53,7 @@ __global__ void computeWrappedPhaseKernel(const unsigned char* const* steps,
                                           int height,
                                           int pixelCount,
                                           int direction,
+                                          int bMin,
                                           RemapCalibration remap,
                                           int useRectification,
                                           float* phase,
@@ -84,8 +85,10 @@ __global__ void computeWrappedPhaseKernel(const unsigned char* const* steps,
             cosSum += intensity * cosf(angle);
         }
         if (valid) {
-            phase[pixel] = atan2f(-sinSum, cosSum);
             modulationValue = 2.0F * sqrtf(sinSum * sinSum + cosSum * cosSum) / static_cast<float>(stepCount);
+            phase[pixel] = (bMin != -1 && modulationValue < static_cast<float>(bMin))
+                ? CUDART_NAN_F
+                : atan2f(-sinSum, cosSum);
             modulation[pixel] = modulationValue;
         } else {
             phase[pixel] = CUDART_NAN_F;
@@ -209,6 +212,7 @@ Status ensureCudaCompatible(const std::vector<const StripeImage*>& steps)
 Status computeOneCuda(CameraSide camera,
                       const std::vector<StripeImage>& images,
                       const StripeRequirement& requirement,
+                      int bMin,
                       const RemapCalibration* remap,
                       WrappedPhaseFrequencyResult& output,
                       WrappedPhaseWorkspace& workspace,
@@ -308,6 +312,7 @@ Status computeOneCuda(CameraSide camera,
         first.height,
         pixelCount,
         requirement.phaseStepDirection,
+        bMin,
         remapValue,
         remap == nullptr ? 0 : 1,
         static_cast<float*>(workspace.phase.ptr),
@@ -326,6 +331,10 @@ Status computeOneCuda(CameraSide camera,
     if (!status.ok()) {
         return status;
     }
+    output.validPixelCount = static_cast<std::size_t>(
+        std::count_if(output.phase.begin(), output.phase.end(), [](float phase) {
+            return std::isfinite(phase);
+        }));
     if (materializeModulation) {
         status = cudaStatus(cudaMemcpy(output.modulation.data(), workspace.modulation.ptr, outputBytes, cudaMemcpyDeviceToHost), "cudaMemcpy modulation D2H");
         if (!status.ok()) {
@@ -410,9 +419,10 @@ WrappedPhaseResult computeWrappedPhaseCudaImpl(const StripeFrameGroup& frame,
     for (const StripeRequirement& requirement : config.stripeRequirements) {
         WrappedPhaseFrequencyResult left;
         Status status = computeOneCuda(CameraSide::Left,
-                                       frame.leftStripes,
-                                       requirement,
-                                       rectificationAvailable ? &leftRemap : nullptr,
+                                        frame.leftStripes,
+                                        requirement,
+                                        config.bMin,
+                                        rectificationAvailable ? &leftRemap : nullptr,
                                        left,
                                        workspace,
                                        options.materializeModulation);
@@ -424,9 +434,10 @@ WrappedPhaseResult computeWrappedPhaseCudaImpl(const StripeFrameGroup& frame,
 
         WrappedPhaseFrequencyResult right;
         status = computeOneCuda(CameraSide::Right,
-                                frame.rightStripes,
-                                requirement,
-                                rectificationAvailable ? &rightRemap : nullptr,
+                                 frame.rightStripes,
+                                 requirement,
+                                 config.bMin,
+                                 rectificationAvailable ? &rightRemap : nullptr,
                                 right,
                                 workspace,
                                 options.materializeModulation);
