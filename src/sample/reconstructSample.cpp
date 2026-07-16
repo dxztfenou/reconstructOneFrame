@@ -19,11 +19,12 @@ void printHelp()
     std::cout
         << "reconstructSample phase-6 CUDA reconstruction and quality-evaluation sample\n"
         << "Usage:\n"
-        << "  reconstructSample --config <path> [--calib <path>] [--input-manifest <path>] [--single-stripe-root <path>] [--group <n>] [--source-img-root <path>] [--frame <n>|--first <n> --last <n>] [--output <dir>] [--compare-legacy <ply>] [--dry-run] [--dry-run-no-calib]\n"
+        << "  reconstructSample [--config-base <path>] --config <path> [--calib <path>] [--input-manifest <path>] [--single-stripe-root <path>] [--group <n>] [--source-img-root <path>] [--frame <n>|--first <n> --last <n>] [--output <dir>] [--compare-legacy <ply>] [--dry-run] [--dry-run-no-calib]\n"
         << "  reconstructSample --help\n\n"
         << "Notes:\n"
         << "  Phase 6 writes depth_points.ply, compares coordinates, and reports frame quality.\n"
         << "  This sample does not call Legacy DLLs, TensorRT, or DSSI.\n"
+        << "  --config-base supplies production defaults; --config overrides dataset-specific keys.\n"
         << "  --input-manifest builds in-memory test stripes only.\n"
         << "  --single-stripe-root reads BMP stripes from <root>\\<group>\\L and <root>\\<group>\\R.\n"
         << "  --source-img-root reads BMP stripes from <root>\\<frame>\\SourceImg\\L0.bmp/R0.bmp.\n";
@@ -101,6 +102,13 @@ int main(int argc, char** argv)
         if (arg == "--config") {
             if (!readOptionValue(argc, argv, i, options.configPath)) {
                 std::cerr << "--config requires a path\n";
+                return EXIT_FAILURE;
+            }
+            continue;
+        }
+        if (arg == "--config-base") {
+            if (!readOptionValue(argc, argv, i, options.configBasePath)) {
+                std::cerr << "--config-base requires a path\n";
                 return EXIT_FAILURE;
             }
             continue;
@@ -244,7 +252,7 @@ int main(int argc, char** argv)
 
     if (!sourceImgRoot.empty()) {
         ReconsConfig config;
-        Status frameStatus = loadReconsConfig(options.configPath, config);
+        Status frameStatus = loadReconsConfigWithBase(options.configBasePath, options.configPath, config);
         if (!frameStatus.ok()) {
             std::cout << "status=" << statusCodeName(frameStatus.code) << "\n"
                       << "module=" << frameStatus.module << "\n"
@@ -290,7 +298,7 @@ int main(int argc, char** argv)
 
     if (!singleStripeRoot.empty()) {
         ReconsConfig config;
-        Status frameStatus = loadReconsConfig(options.configPath, config);
+        Status frameStatus = loadReconsConfigWithBase(options.configBasePath, options.configPath, config);
         if (!frameStatus.ok()) {
             std::cout << "status=" << statusCodeName(frameStatus.code) << "\n"
                       << "module=" << frameStatus.module << "\n"

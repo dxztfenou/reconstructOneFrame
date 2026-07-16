@@ -661,3 +661,78 @@
 - metal `0..478`：Res1F 479/479，总点数 `36421770`，对 Legacy 比例 `0.716765`；质量均值 `0.710554`，Pearson `0.861027`。
 - non-metal `0..478`：Res1F/Legacy 点数比 `0.951188`，质量均值 `0.722236/0.769732`，Pearson `0.971625`；剩余 metal 差异主要是 Legacy hole filling。
 - 新鲜验证：Res1F Release build + CTest `15/15`；DSSI provider/replay/system build + CTest `1/1`。
+
+## 2026-07-14 07131838 non-metal 全帧结果物化
+
+- 用户要求两套算法默认 non-metal 重建全部帧；Legacy 接受 EXR，Res1F 每帧必须包含 PLY。
+- 已确认输入 `Upper` 下数字帧连续 `0..478`，共 479 帧；`calibResult.json` 与 Legacy `calibParams.yml` 均存在。
+- 已确认最新 Legacy 工作树为干净的 `main@46375a0e4f89252869aa82a6028a290c25b85c6e`，与 `origin/main` 一致。
+- 现有 `run_07131838_quality_battle.ps1` 的 provider replay 只保存 CSV/日志，不物化每帧 PLY/EXR，不能直接作为本次交付入口。
+- 已建立阶段 111-115；当前先追踪 Res1F sample 和 Legacy App 的原生落盘契约，再执行 `0..2` 烟测。
+- 首次路径探针因 PowerShell 空管道语法错误在解析期退出；改用显式 `$rows` 后完成检查，未修改输入或输出。
+- 已确认 Res1F sample 的 `--output` 开启 PLY，多帧时按 frame 子目录写盘；D 盘剩余约 `225.44 GB`。
+- 输入目录已有 479 套历史 EXR/PNG，但缺少最新提交与 non-metal 运行证据，不作为本轮 Legacy 交付，继续追踪 Legacy App 原生输出入口。
+- Legacy App `--help` 探针返回非零并中止该批只读输出；没有启动重建，后续直接按源码确认的位置参数调用。
+- 源码确认 Legacy App 的真实 CLI 和逐帧落盘内容；本次不需要修改 Res1F、DSSI 或 Legacy 生产代码。
+- 计划使用全新 `output/07131838_nonmetal_full_materialized` 根目录，先重新构建两端并执行 `0..2` 烟测。
+- Res1F `0..2` non-metal 烟测 `3/3` 为 `Ok`，生成三个非空 `depth_points.ply`，点数为 `114453/108487/122531`。
+- Legacy 首次 `0..2` App 烟测在首帧前 exit 1，控制台、输出目录和当前工作目录日志均为空；开始按依赖边界定位根因。
+- PE 依赖与目录对比确认 App 运行目录缺少 OpenCV/TBB/TensorRT，当前 PATH 也未提供；下一次只前置既有隔离 staging PATH，保持命令、配置和输入不变。
+- 前置既有 staging PATH 后，Legacy `0..2` non-metal 烟测 `3/3` 成功，日志确认目标 YAML 和 `isMetalScan=false`。
+- 烟测审核的两个 PowerShell 格式化命令再次命中空管道 ParserError；算法输出未受影响，后续禁用循环结果直接接管道的写法。
+- 修正审核命令后确认：Res1F 每帧 1 个 PLY；Legacy 每帧 `0.exr/1.exr/2.png/3.png/depth_points.ply` 共 5 个文件。
+- frame 0 PLY header 点数为 Res1F `114453`、Legacy `112394`；阶段 112 完成，进入 Res1F 479 帧全量。
+- Res1F 全量结束：`479/479` 个 PLY、`479` 个 `status=Ok`，无缺帧、空文件或零点 PLY，stderr 为空。
+- Res1F PLY 总计约 `2.151 GB`、`37,885,889` 点，单帧范围 `563..138978`；阶段 113 完成，进入 Legacy 全量。
+- Legacy 全量结束并审核通过：479 个连续目录、2395 个文件、`479/479` status 0，无缺失、空文件或零点 PLY，stderr 为空。
+- Legacy 结果约 `3.030 GB`，累计 `39,830,065` 点，单帧范围 `769..140583`；stdout 明确记录目标 YAML、`isMetalScan=false` 和 `success=479 total=479`。
+- 用 OpenCV 抽样解码 frame `0/26/311/478` 的双 EXR，全部为 `400x424x3 float32`。
+- 两端 full 结果路径、stdout/stderr 和输入/二进制 SHA256 已核对；没有遗留重建进程，阶段 114-115 完成。
+
+## 2026-07-14 2607011016 量块台阶重建与平整度复核
+
+- 用户反馈 Res1F 牙模点云视觉上不够平，要求改用量块台阶数据重建；本轮先用几何指标复核，不直接调参。
+- 已确认 `singleStripe` 有 groups `1..5`，每组 36 张图；Res1F JSON 与 Legacy YAML 均存在。
+- 历史 Legacy 验收基线为 groups 1-5 最大误差 `116.643 µm`、平均 `110.262 µm`，全部 `quality_status=OK`。
+- 已建立阶段 116-120；当前定位已验证指标脚本，并准备 group 1 双端 non-metal 烟测。
+- 已定位最新 Legacy `.agent/scripts/analyze_metric_ply.py` 并读取参数；历史配置只用于基线解释，当前重建不沿用其旧路径和旧算法开关。
+- Res1F group 1 当前 production JSON 烟测成功，输出 `60645` 点 PLY。
+- Legacy group 1 首次烟测日志显示相对标定被锚定到 main config 目录并 init 失败；将生成只修正 `calibParamsPath` 的隔离 runtime 配置。
+- 隔离 Legacy 配置修正后 group 1 成功，日志确认指定 YAML、non-metal 和 status 0；烟测 PLY 点数 Res1F/Legacy=`60645/75519`。
+- 同一评价器的 group 1：Res1F 台阶误差 `52.064 µm`、flatness `108.31/116.77 µm`；Legacy 当前台阶误差 `119.810 µm`、flatness `105.24/121.92 µm`，均为 quality OK。
+- 单组没有证明 Res1F 平面明显更差，但其点数与 extracted ratio 更低；阶段 117 完成，进入 groups 1-5 全量。
+- groups 1-5 全量完成：Res1F/Legacy 均 `5/5` 成功；Res1F PLY 点数 `60645/74344/85901/89201/77125`，Legacy `75519/84413/93241/96585/83186`。
+- 量块评价全部 quality OK。Res1F 平均/最大台阶误差 `40.096/52.064 µm`，Legacy 当前为 `109.690/119.810 µm`。
+- Res1F 平均/最大 flatness `115.886/133.216 µm`，Legacy 当前 `110.624/121.916 µm`；平均 RMS `25.858/19.486 µm`，证实 Res1F 表面残差噪声中度偏高。
+- 阶段 118-119 完成；当前审核输出、日志、metric report 和进程状态，不在根因未定位前修改算法。
+- 用户询问 subpixel 默认值；已核验本轮实际配置：Res1F 和 Legacy production JSON 均为 `disparitySubpixelEnabled=true`，历史数据集 run_config 的 false 未被使用。
+- 最终审核：Res1F/Legacy 均 `5/5` 成功、metric 均 `5/5 quality OK`，Legacy EXR 可解码，无遗留进程，CTest `15/15`；阶段 120 完成。
+
+## 2026-07-15 2607151356 新标定量块精度与平面度对比
+
+- 用户指定 `D:\code\reconstructOneFrame\.agents\skills\evaluating-gauge-block-accuracy`；已完整读取 SKILL 和 wrapper，按其隔离输出与 JSON/CSV/HTML 报告规则执行。
+- 新标定目录包含 `calibResult.json`、`calibParams.yml` 和 `single_stripe`；有效组为非连续的 `1,2,4,7,8,9`，每组 36 张 BMP。
+- wrapper 对 First..Last 每组强制检查 PLY，不能用 `1..9` 覆盖缺失组；当前先确认技能默认 Legacy repo 与此前最新 main 基线的关系。
+- 常规比较不启用 red/green good/bad diagnostic PLY。
+- 已刷新 Legacy 远端：最新 main 为 `08c9e49a`，而不是此前的 `46375a0e`；旧 `teethscanalgorithm3x4-main` worktree 路径已失效。
+- 最新 Legacy CLI 不兼容 skill wrapper 的 Z/phase flags；按 skill 的 manual current CLI 规则改用隔离运行 JSON，不改变分析器和指标口径。
+- 已完成 latest Legacy 和当前 Res1F Release 构建；group 1 双端 non-metal 烟测及同一 analyzer 指标均成功，双方 quality OK。
+- group 1 step error 为 Res1F `17.711 µm`、Legacy `12.592 µm`；Res1F good ratio `0.833` 明显低于 Legacy 约 `0.999`，进入六组全量确认。
+- Res1F 六个有效组全部 `status=Ok` 并生成非空 PLY，点数为 `100379/99413/93336/106990/108943/102667`；运行日志确认 smoothing/filter 均未应用。
+
+## 2026-07-16 Res1F 量块平整度追齐实施
+
+- 恢复上一轮现场后确认：当前工作区只有 `docs/planning` 未提交，源码还没有实施本轮追齐修改。
+- 读取 `cpp-pro`、`planning-with-files-zh`、`evaluating-gauge-block-accuracy`、`commit-work`、`requesting-code-review`、`systematic-debugging`、`verification-before-completion` 技能说明。
+- 定位 root cause：`D:\Data\Calib\2607151356_mach6\reconsAlgPara_adaptive_metric.json` 缺少 `pointCloudFilterEnabled`，而旧兼容默认保持关闭；直接修改默认会破坏既有测试和历史复现口径。
+- 实施 `loadReconsConfigWithBase(basePath, overridePath, config)`，新增 `InitOptions::configBasePath` 和 `reconstructSample --config-base`；sample 的 frame loader 也使用同一 overlay 后配置，避免 engine 与输入读取不一致。
+- 增加配置 overlay 测试：`config/reconsAlgPara.json` 作为 base 时，缺失的 `pointCloudFilterEnabled`、`colorTextureEnabled`、`disparitySubpixelEnabled` 继承生产值，显式 override 的 `minZ`、`qualityInfoEnabled` 生效。
+- 首次构建暴露 `ReconsConfig.cpp` 中文注释的 C4819 和 `loadReconsConfigWithBase` 的 C4715；已添加 MSVC `/utf-8` 并将 overlay 函数改为单出口 seed 逻辑，随后 Release 构建无新增警告。
+- Release `ctest --test-dir build -C Release --output-on-failure` 通过 `15/15`；`reconstructSample --help` 显示新增 `--config-base`。
+- 使用 `--config-base config/reconsAlgPara.json` + 数据集 adaptive JSON 重跑 `2607151356` 六组：全部 `status=Ok`，全部 `filterApplied=true/smoothingApplied=false`，点数为 `82482/81442/68617/77079/80967/70867`。
+- 同一 analyzer 生成 `catchup_filter_base/metrics_res1f`：step mean/max `11.30/24.93 µm`，flatness mean/max `113.01/120.56 µm`，RMS mean `25.77 µm`，good/extracted mean `0.946/0.801`，`6 OK / 0 WARN`。
+- smoothing+filter 消融输出在 `catchup_smooth_filter_probe`：RMS mean `21.35 µm`，但后三组点数大幅低于 Legacy，判定为不适合作默认修复的过度收缩。
+- 写入正式方案与回归文档：`docs/design/2026-07-16-res1f-legacy-gauge-block-flatness-catchup-plan.md`。
+- 代码审查发现两项兼容问题并已修复：`InitOptions::configBasePath` 移到结构体尾部，避免 C++ 聚合初始化错位；`loadReconsConfigWithBase("", path)` 直接走旧 `loadReconsConfig(path)`，保持无 base 时的单文件语义和错误信息。
+- 补充 `missing base config` 回归断言，并显式包含 `<utility>`；最终 `cmake --build build --config Release -- /m` 无新增警告，`git diff --check` 通过。
+- 最终 `ctest --test-dir build -C Release --output-on-failure` 通过 `15/15`；复跑 group 1 smoke 确认 `filterApplied=true`、`smoothingApplied=false`、`pointCloudVertexCount=82482`。

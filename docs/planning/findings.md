@@ -542,3 +542,66 @@
 - JSON 和 YAML 的 K/D/R/T/R_L/R_R/P_L/P_R/Q 逐元素完全一致，排除标定文件格式差异。
 - Res1F 当前在 raw 强度上计算 wrapped/absolute phase，最后才 remap absolute phase；Legacy 在每张强度图 remap 后计算相位。该非线性顺序不等价。
 - OpenCV 预 rectified BMP + 无二次 phase remap 的诊断实验：frame 2/26/311 filteredValid 从 `107020/2655/23` 提升到 `122458/47713/6205`，确认 rectification 时序是重大根因。
+
+## 2026-07-14 07131838 non-metal 全帧物化
+
+- 指定输入根目录存在，`Upper` 下纯数字目录为连续 `0..478` 共 479 帧。
+- Res1F 标定固定为 `D:\Data\Calib\2607021545_mach6\calibResult.json`；Legacy 标定固定为同目录 `calibParams.yml`，两者消费边界不混用。
+- 最新 Legacy 本地 main、`origin/main` 和用户指定提交均为 `46375a0e4f89252869aa82a6028a290c25b85c6e`，工作树干净。
+- `reconstruction_provider_replay.exe` 的现有 07131838 脚本只生成逐帧 CSV 和日志，不保存算法返回的大图或 PLY；本次必须改用能够物化结果的入口，或为 replay 增加显式输出能力。
+- `reconstructSample --output <dir>` 会设置 `writePly=true`；多帧 SourceImg 模式自动启用逐帧子目录，适合作为 Res1F PLY 全量入口。
+- 输入帧目录本身已有 479 套 `0.exr/1.exr/2.png/3.png`，但其 Legacy 提交和 scan mode 不可由文件本身证明，不能冒充本轮最新 non-metal 输出。
+- D 盘当前可用空间约 `225.44 GB`，足以同时保留 479 帧 Res1F PLY 和 Legacy 原生结果。
+- Res1F 多帧 PLY 的确定目录契约为 `<output>/<frame>/depth_points.ply`，由 `outputPerFrameSubdirectory` 和 frame id 共同生成。
+- 最新 Legacy `TeethScanAlgorithmApp` 支持位置参数 `scan_root/config/output_root` 以及 `--first/--last/--non-metal/--save-outputs 1`；成功帧会写 `depth_points.ply`、`0.exr`、`1.exr`、`2.png`、`3.png`。
+- Legacy App 的保存开关与算法内部 `saveOutputs` 分离：App 可保存返回的大图和 PLY，同时保持算法 config 的重型内部 debug 输出关闭。
+- Res1F `0..2` 物化烟测成功，PLY 大小约 `6.5-7.9 MB`，frame 2 点数复现修复后的 `122531`。
+- Legacy App 首次烟测没有进入逐帧输出；其 `build/bin/Release` 仅包含项目 DLL，而此前成功 benchmark 使用了额外 OpenCV/TBB/TensorRT staging，需先用 PE 依赖和搜索路径证据确认环境差异。
+- `dumpbin /dependents` 确认 App 直接依赖 `opencv_world453.dll`，算法 DLL 依赖 `cudart64_12.dll/opencv_world453.dll/tbb12.dll/nvinfer.dll/Log.dll`；当前 PATH 只有 CUDA，前三个第三方运行时缺失。
+- 已验证的 `legacy_runtime_latest/bin` 恰好包含 OpenCV、TBB、TensorRT 和 Log；根因假设为 DLL 搜索环境不完整，最小测试只在单次进程前置该 staging PATH。
+- Res1F full `0..478` 的累计 PLY vertex 数为 `37,885,889`，与前一轮 non-metal benchmark 点数完全一致；物化没有改变算法结果。
+- Legacy full `0..478` 的累计 PLY vertex 数为 `39,830,065`，同样与前一轮 non-metal benchmark 完全一致；本轮物化可视为该结果的逐帧可检查版本。
+- Legacy 每帧 5 个文件，共 2395 个；双 EXR 抽样可被 OpenCV 作为 `CV_32FC3` 正常解码。
+- 最终输出根目录为 `D:\code\reconstructOneFrame\output\07131838_nonmetal_full_materialized`；full 数据约 `5.18 GB`，smoke 数据约 `0.05 GB`。
+- Res1F sample SHA256 为 `5E8F110DD22B7533DBDCF3861AACC8DF2AD9B7210389D033E1F1BEDCE8E03CC4`；Legacy App/DLL SHA256 分别为 `26A58FFF3690F3708E96AE812AE721ED01C966113D6602B650D84C6D11764992` / `66A999AEF3B1070AB6B1C40335BE5022E61E1FEB735CCD8EA11606121E57A68C`。
+
+## 2026-07-14 2607011016 量块台阶复核
+
+- 数据集 `D:\Data\Calib\2607011016_mach6\singleStripe` 含数字组 `1..5`，每组左右共 36 张条纹图。
+- `calibResult.json` SHA256=`820FE658F26128744A6B07110B8BE05B4257CD8EA0BA803BA700DA2624A532B8`；Legacy `calibParams.yml` SHA256=`77C4BC69F48E1437635EE63B1767855D6FE74A66CDAA4F3E78B324C52CAC2972`。
+- 已知可信 Legacy 几何基线：groups 1-5 误差 `109.45/111.48/116.64/109.49/104.25 µm`，最大 `116.643 µm`、均值 `110.262 µm`，全部质量状态为 OK。
+- 已验证评价脚本位于最新 Legacy `.agent/scripts/analyze_metric_ply.py`，默认测量 6 mm 台阶、双平面 flatness/RMS/P95/P99，并输出 JSON/CSV/HTML。
+- 数据集历史 `output/run_config.json` 的 `calibParamsPath` 指向旧的 `260701_mach6`，且关闭当前 LR consistency/subpixel 等能力；它只解释历史基线，不用于当前版本重建。
+- 当前对比使用各自 production 配置：Res1F 当前 JSON；Legacy 当前 main 配置。Legacy 通过工作目录解析相对 `calibParams.yml`，必须由 `[CalibLoad]` 日志确认命中 `2607011016_mach6`。
+- 实测修正：Legacy 相对 `calibParamsPath` 按配置文件目录解析，而不是进程工作目录；公平运行必须生成当前 main 配置的隔离副本并写入目标 YAML 绝对路径。
+- group 1 当前 production 对比：Res1F/Legacy 点数 `60645/75519`，step error `52.064/119.810 µm`，双平面 flatness `108.31/116.77` 对 `105.24/121.92 µm`；视觉“不平”在该组未表现为 flatness 明显劣化。
+- Res1F group 1 good ratio `0.930` 尚可，但 extracted ratio 约 `0.77`，低于当前 Legacy 约 `0.96`；密度/覆盖与平整度必须分开评价。
+- groups 1-5 当前结果全部 quality OK。Res1F 平均点数 `77443`、Legacy `86589`；mean extracted ratio `0.7951/0.9737`。
+- Res1F/Legacy mean flatness=`115.886/110.624 µm`、max flatness=`133.216/121.916 µm`，差异存在但不是数量级恶化。
+- 更稳定的粗糙度信号是 mean plane residual RMS=`25.858/19.486 µm`，Res1F 比最新 Legacy 高约 32.7%；用户所见“不太平”在量块上表现为表面残差噪声偏高，而不是台阶尺度错误。
+- Res1F mean/max step error=`40.096/52.064 µm`，显著低于当前 Legacy `109.690/119.810 µm` 和历史 Legacy `110.262/116.643 µm`；当前几何尺度与台阶高度反而更准。
+- 当前证据只能确认 residual/coverage 差距，尚未定位到 matching、subpixel、filter 或法向阶段中的具体根因，因此本轮不修改算法。
+- 当前 Res1F 与 Legacy production JSON 都显式设置 `disparitySubpixelEnabled=true`；本轮命令实际消费这两份配置。`ReconsConfig.h/configs.h` 中的 false 是缺 key 兼容初值，不代表部署默认。
+- 数据集历史 `output/run_config.json` 的 subpixel=false 只属于旧基线配置，本轮没有使用，因此当前 flatness/RMS 对比不存在 subpixel 开关不一致。
+
+## 2026-07-15 2607151356 gauge-block skill 评估
+
+- 指定 skill 要求每个 calibration 使用隔离输出，优先 wrapper 重建，然后仅分析该次生成的 `depth_points.ply`，报告 step error、good ratio、quality 及 mean/max/median absolute error。
+- 新数据有效组号为 `1,2,4,7,8,9`；wrapper 的连续 First/Last 检查与该布局不直接兼容，需要逐组调用或先物化后 `SkipReconstruct` 分组分析。
+- `calibResult.json` 和 `calibParams.yml` 同属 `2607151356_mach6`；本轮保持 Res1F JSON / Legacy YAML 的消费边界。
+- 2026-07-15 刷新远端后，最新 Legacy `origin/main` 为 `08c9e49ac1aab6ffc5bf241915714bf9e07d3f35`，不能继续把此前的 `46375a0e` 当作 latest。
+- 最新 App 只接受 `scan_root/runtime JSON/output_root`、group 范围和 metal/non-metal 等参数；Z、phase threshold、phase direction 必须由运行 JSON 提供。
+- `reconsAlgPara_adaptive_metric.json` 已用绝对 `calibParamsPath` 指向本轮 YAML，并显式设置 `phaseStepDirection=-1`、`minZ=50`、`maxZ=160`、subpixel/LR/monotonic 开启，适合作为 Legacy 隔离运行配置的来源。
+- latest Legacy `08c9e49a` 与当前 Res1F Release 均构建成功；Legacy 日志确认加载目标 YAML、adaptive rectification contract、non-metal 以及 subpixel/LR/monotonic 开关。
+- group 1 烟测双方均为 quality OK：Res1F/Legacy step error=`17.711/12.592 µm`，good ratio=`0.83345/0.999`（Legacy 控制台四舍五入），Res1F 双平面 flatness=`126.446/113.717 µm`、双平面 RMS=`24.998/25.356 µm`。
+
+## 2026-07-16 Res1F 量块平整度追齐发现
+
+- `2607151356` 原始 Res1F 运行直接使用数据集 `reconsAlgPara_adaptive_metric.json`；该文件显式开启 subpixel/LR/monotonic，但缺少 `pointCloudFilterEnabled`，因此按旧配置兼容默认关闭最终 filter。
+- 这解释了原始日志中的 `smoothingApplied=false, filterApplied=false`，也解释了点数过密、good ratio 低和 1 组 WARN。
+- 不能把 `ReconsConfig.h` 的缺 key 默认直接改成 `true`：现有测试明确要求旧单文件 JSON 缺少 point-cloud filter key 时保持关闭，避免历史 benchmark 静默变口径。
+- 已采用显式 base/override：`loadReconsConfig(path)` 保持旧语义；`loadReconsConfigWithBase(base, override)` 允许 production defaults 继承，再由数据集 JSON 覆盖实验参数。
+- `base+filter` 六组结果：step mean/max `11.30/24.93 µm`，flatness mean/max `113.01/120.56 µm`，good/extracted ratio `0.946/0.801`，全部 `quality=OK`。
+- latest Legacy 六组结果：step mean/max `10.78/19.81 µm`，flatness mean/max `114.59/127.85 µm`，good/extracted ratio `0.995/0.973`，全部 `quality=OK`。
+- smoothing+filter 消融可把 RMS mean 从 `25.77 µm` 降到 `21.35 µm`，但后三组点数降到 `40814..48300`，明显低于 Legacy 的 `86119/89550/89197`，因此不纳入默认修复。
+- 正式方案文档：`docs/design/2026-07-16-res1f-legacy-gauge-block-flatness-catchup-plan.md`。

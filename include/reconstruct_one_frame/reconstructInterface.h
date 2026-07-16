@@ -182,6 +182,7 @@ struct InitOptions {
     bool writePly = false;
     bool materializeFrameOutputs = false;
     bool outputPerFrameSubdirectory = false;
+    std::string configBasePath;
 };
 
 #if defined(_MSC_VER)

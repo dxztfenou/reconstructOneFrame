@@ -31,7 +31,7 @@ ReconstructEngine& ReconstructEngine::operator=(ReconstructEngine&& other) noexc
 
 Status ReconstructEngine::init(const InitOptions& options)
 {
-    Status status = loadReconsConfig(options.configPath, impl_->config);
+    Status status = loadReconsConfigWithBase(options.configBasePath, options.configPath, impl_->config);
     if (!status.ok()) {
         impl_->initialized = false;
         return status;

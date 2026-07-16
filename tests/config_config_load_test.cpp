@@ -67,8 +67,11 @@ int main()
     }
     ReconsConfig legacyCompatible;
     status = loadReconsConfig(legacyCompatiblePath.string(), legacyCompatible);
+    ReconsConfig noBaseCompatible;
+    Status noBaseStatus = loadReconsConfigWithBase("", legacyCompatiblePath.string(), noBaseCompatible);
     std::filesystem::remove(legacyCompatiblePath);
     require(status.ok(), "expected missing matching keys to use backward-compatible defaults");
+    require(noBaseStatus.ok(), "expected empty config base to keep single-file load compatibility");
     require(!legacyCompatible.disparityWindowEnabled, "expected missing disparity window key to remain disabled");
     require(!legacyCompatible.matchingLeftRightConsistencyEnabled, "expected missing left-right key to remain disabled");
     require(!legacyCompatible.matchingRightPhaseMonotonicEnabled, "expected missing monotonic key to remain disabled");
@@ -80,6 +83,29 @@ int main()
     require(legacyCompatible.clear255DilateRadius == 3, "expected compatible clear255 radius default");
     require(!legacyCompatible.colorHighlightCompressionEnabled,
             "expected missing highlight compression key to remain disabled");
+    require(!noBaseCompatible.pointCloudFilterEnabled, "expected no-base overlay to preserve missing filter default");
+    require(!noBaseCompatible.colorTextureEnabled, "expected no-base overlay to preserve missing color default");
+
+    const auto overridePath = std::filesystem::temp_directory_path() / "rof_dataset_override_config.json";
+    {
+        std::ofstream out(overridePath);
+        out << R"({"minZ":60,"qualityInfoEnabled":true})";
+    }
+    ReconsConfig overlaid;
+    status = loadReconsConfigWithBase("config/reconsAlgPara.json", overridePath.string(), overlaid);
+    std::filesystem::remove(overridePath);
+    require(status.ok(), "expected dataset override to merge with production base config");
+    require(overlaid.minZ == 60.0, "expected override config to replace base scalar");
+    require(overlaid.pointCloudFilterEnabled, "expected base point-cloud filter to survive missing override key");
+    require(overlaid.colorTextureEnabled, "expected base color texture to survive missing override key");
+    require(overlaid.qualityInfoEnabled, "expected explicit override key to replace base quality flag");
+    require(overlaid.disparitySubpixelEnabled, "expected base subpixel flag to survive missing override key");
+
+    ReconsConfig missingBase;
+    status = loadReconsConfigWithBase("config/does_not_exist.json", "config/reconsAlgPara.json", missingBase);
+    require(status.code == StatusCode::ConfigMissing, "expected missing base config to fail");
+    require(status.message.find("base config:") != std::string::npos,
+            "expected missing base config error to identify the base layer");
 
     const auto invalidColorPath = std::filesystem::temp_directory_path() / "rof_invalid_color_config.json";
     {

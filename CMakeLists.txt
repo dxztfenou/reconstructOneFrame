@@ -89,10 +89,12 @@ target_link_libraries(reconstructOneFrame
 if(MSVC)
     target_compile_options(rofCore
         PRIVATE
-            $<$<COMPILE_LANGUAGE:CXX>:/W4 /permissive->
+            $<$<COMPILE_LANGUAGE:CXX>:/utf-8>
+            $<$<COMPILE_LANGUAGE:CXX>:/W4>
+            $<$<COMPILE_LANGUAGE:CXX>:/permissive->
             $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/W4>
     )
-    target_compile_options(reconstructOneFrame PRIVATE /W4 /permissive-)
+    target_compile_options(reconstructOneFrame PRIVATE /utf-8 /W4 /permissive-)
 else()
     target_compile_options(rofCore
         PRIVATE

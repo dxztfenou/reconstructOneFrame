@@ -83,6 +83,9 @@ struct ReconsConfig {
 };
 
 Status loadReconsConfig(const std::string& path, ReconsConfig& config);
+Status loadReconsConfigWithBase(const std::string& basePath,
+                                const std::string& overridePath,
+                                ReconsConfig& config);
 std::string summarizeConfig(const ReconsConfig& config);
 
 } // namespace reconstruct_one_frame

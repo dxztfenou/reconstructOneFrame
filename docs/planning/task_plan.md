@@ -573,3 +573,98 @@
 | 配置差异 PowerShell 把 `foreach` 结果直接接空管道，触发 `ParserError: An empty pipe element is not allowed` | 命令在解析阶段停止且未写文件；改为先赋值 `$diffs` 再格式化，并拆分只读查询 |
 | 聚焦配置查询又重复 `foreach {...} | Format-Table` 空管道错误（第 2 次） | 停止该写法，统一使用显式 `$rows=@()` 收集后再输出；源码读取与配置查询彻底分开 |
 | 注释与计划状态合并补丁因复选框上下文不一致而拒绝 | 补丁整体未应用；拆成源码/测试与计划状态两个精确补丁 |
+
+## 2026-07-14 07131838 non-metal 全帧结果物化
+
+| 阶段 | 状态 | 内容 |
+|---|---|---|
+| 111 | complete | 核对输入帧范围、JSON/YAML 标定边界和最新 Legacy 提交 |
+| 112 | complete | 确认 Res1F/Legacy 物化入口并用 `0..2` 验证 PLY/EXR 目录契约 |
+| 113 | complete | 使用 Res1F non-metal 重建 `0..478`，逐帧保存 PLY |
+| 114 | complete | 使用最新 Legacy non-metal 重建 `0..478`，保存其原生 EXR/图像结果 |
+| 115 | complete | 核验 479 帧完整性、失败帧、文件数量和磁盘占用并记录交付路径 |
+
+## 本轮边界
+
+- 输入固定为 `D:\code\dentalscanserviceinterface\build\Release\output_test\output 07131838_teeth\Upper` 的数字帧 `0..478`。
+- Res1F 只允许读取 `D:\Data\Calib\2607021545_mach6\calibResult.json`，默认 non-metal，且每帧必须有 PLY。
+- Legacy 固定为干净的 `main@46375a0e4f89252869aa82a6028a290c25b85c6e`，由其自身读取 `calibParams.yml`；接受原生 EXR 输出。
+- 结果写入本仓库未跟踪 `output/`，不覆盖输入数据，不提交、不推送。
+
+## 本轮错误记录
+
+| 错误 | 处理 |
+|---|---|
+| 首次路径存在性探针把 `foreach` 结果直接接管道，PowerShell 在解析期报空管道错误 | 未写文件；改为先赋值 `$rows` 再 `Format-Table`，随后确认所有输入和标定路径存在 |
+| 对 Legacy `TeethScanAlgorithmApp.exe` 使用 `--help` 返回非零，导致并行读取批次提前结束 | 未重建、未写结果；停止 CLI 猜测，改为直接读取 `sample/teeth_scan_algorithm_app.cpp` 的真实位置参数契约 |
+| Legacy `0..2` non-metal 首次烟测无控制台输出并以 exit 1 结束 | 未生成 Legacy 文件；进入系统化调试，先检查日志、依赖和已验证 staging 环境，不盲目重跑 |
+| 烟测文件审核的两个只读命令再次使用 `foreach {...} | Format-*`，触发同类空管道 ParserError | 这是本任务第 3 次同类命令错误；停止该语法模式，后续所有循环输出强制先写 `$rows=@()`，再在独立语句格式化 |
+
+## 最终交付路径
+
+- Res1F：`D:\code\reconstructOneFrame\output\07131838_nonmetal_full_materialized\full\res1f\<frame>\depth_points.ply`
+- Legacy：`D:\code\reconstructOneFrame\output\07131838_nonmetal_full_materialized\full\legacy\<frame>\{0.exr,1.exr,2.png,3.png,depth_points.ply}`
+- 运行日志：同一 `full` 目录下的 `res1f.stdout.log/res1f.stderr.log/legacy.stdout.log/legacy.stderr.log`
+
+## 2026-07-14 2607011016 量块台阶重建与平整度复核
+
+| 阶段 | 状态 | 内容 |
+|---|---|---|
+| 116 | complete | 核对 5 组 singleStripe 输入、JSON/YAML 标定和历史量块验收基线 |
+| 117 | complete | 定位已验证量块评价脚本并完成 group 1 双端 non-metal 物化烟测 |
+| 118 | complete | 使用 Res1F JSON 与最新 Legacy YAML 重建 groups `1..5` |
+| 119 | complete | 运行量块台阶指标和点云平面度统计，比较历史 Legacy 基线 |
+| 120 | complete | 审核输出完整性、记录“看起来不平”的证据结论和交付路径 |
+
+## 本轮边界
+
+- 输入固定为 `D:\Data\Calib\2607011016_mach6\singleStripe\1..5`，不使用或覆盖数据集内历史 `output`。
+- Res1F 只读取 `calibResult.json`；Legacy 只读取 `calibParams.yml`，两端保持 non-metal。
+- 先重建、再用量块指标判断几何；未经数据证明不修改算法、过滤参数或标定。
+- 新输出写入未跟踪 `output/2607011016_gauge_block_nonmetal`，不提交、不推送。
+- 当前 production JSON 两端均显式开启 subpixel；C++ 字段初值 `false` 仅服务缺 key 的旧配置兼容。
+
+## 本轮错误记录
+
+| 错误 | 处理 |
+|---|---|
+| Legacy group 1 首次烟测把相对 `calibParams.yml` 解析到 main 仓库 config 目录并 init 失败 | 日志已证明解析锚点是配置目录而非工作目录；生成仅替换标定绝对路径的隔离 runtime JSON 后重跑 |
+
+## 最终交付路径
+
+- Res1F PLY：`D:\code\reconstructOneFrame\output\2607011016_gauge_block_nonmetal\full\res1f\<group>\depth_points.ply`
+- Legacy：`D:\code\reconstructOneFrame\output\2607011016_gauge_block_nonmetal\full\legacy\<group>\{0.exr,1.exr,2.png,3.png,depth_points.ply}`
+- 指标报告：同一 `full` 目录下 `metrics_res1f` 与 `metrics_legacy`
+
+## 2026-07-15 2607151356 新标定量块精度与平面度对比
+
+| 阶段 | 状态 | 内容 |
+|---|---|---|
+| 121 | complete | 读取指定 gauge-block skill，核对新标定、非连续组号和当前 Legacy 基线 |
+| 122 | complete | 用 Res1F `calibResult.json` 重建 groups `1,2,4,7,8,9` |
+| 123 | complete | 用最新 Legacy main 和指向 `calibParams.yml` 的隔离运行 JSON 重建同组 |
+| 124 | complete | 用 skill 规定的 analyzer 生成双方 JSON/CSV/HTML 指标报告 |
+| 125 | complete | 对齐 step error、flatness、RMS、good/extracted ratio，定位主要差距 |
+| 126 | complete | 审核输出、测试和进程状态，记录结论与交付路径 |
+| 127 | complete | 写入 Res1F 追齐 Legacy 量块平整度方案文档 |
+| 128 | complete | 实施显式 config base/override 入口，保留旧单文件兼容语义 |
+| 129 | complete | 使用 base+filter 回归 `2607151356` 六组量块并生成指标 |
+| 130 | complete | 执行 smoothing+filter 消融，确认不纳入默认修复 |
+| 131 | complete | 代码审查、中文维护注释、最终验证、提交并推送 |
+
+## 本轮边界
+
+- 数据根目录固定为 `D:\Data\Calib\2607151356_mach6\single_stripe`，有效组号是 `1,2,4,7,8,9`。
+- Res1F 只读取同目录 `calibResult.json`；Legacy 只读取 `calibParams.yml`。
+- 按 skill 默认关闭 gauge-block good/bad point diagnostic PLY；常规报告只生成 JSON/CSV/HTML。
+- 输出写入新的未跟踪隔离目录，不覆盖标定目录自带 `output`，不提交、不推送。
+
+## 本轮错误记录
+
+| 错误 | 处理 |
+|---|---|
+| skill wrapper 向 Legacy App 传递最新 CLI 已删除的 Z/phase 参数，并假定组号连续 | 按 skill 的 manual current CLI 规则手动运行；参数写入隔离 JSON，六个非连续组分别物化后统一分析 |
+| 读取 `origin/main:CMakePresets.json` 失败 | 最新主线不存在该文件；按 `AGENTS.md` 的标准 Visual Studio 生成命令配置构建 |
+| 首次 PowerShell 汇总误把 JSON 顶层当作 `measurements` 对象 | 实际 analyzer 输出顶层数组；读取 `[0]` 或直接枚举数组后再汇总，不重跑算法 |
+| 直接把缺 key 默认改为开启 filter 会破坏旧配置兼容 | 改为新增显式 `--config-base` / `loadReconsConfigWithBase`，旧 `loadReconsConfig(path)` 语义不变 |
+| `ReconsConfig.cpp` 中文注释触发 MSVC C4819 | 给 MSVC C++ 编译增加 `/utf-8`，保留可读注释且消除代码页警告 |

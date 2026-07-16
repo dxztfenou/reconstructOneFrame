@@ -1,6 +1,7 @@
 #include "config/ReconsConfig.h"
 
 #include <sstream>
+#include <utility>
 
 namespace reconstruct_one_frame {
 
@@ -14,11 +15,8 @@ Status requirePositive(const char* key, int value)
     return {};
 }
 
-} // namespace
-
-Status loadReconsConfig(const std::string& path, ReconsConfig& config)
+Status loadConfigJsonObject(const std::string& path, JsonObject& json)
 {
-    JsonObject json("{}");
     Status status = loadJsonObjectFromFile(path, json);
     if (status.code == StatusCode::ConfigMissing) {
         status.module = "ReconsConfig";
@@ -28,8 +26,11 @@ Status loadReconsConfig(const std::string& path, ReconsConfig& config)
         status.module = "ReconsConfig";
         return status;
     }
+    return {};
+}
 
-    ReconsConfig parsed;
+Status parseReconsConfigObject(const JsonObject& json, ReconsConfig parsed, ReconsConfig& config)
+{
     parsed.rawJson = json.raw();
 
     std::vector<int> imageSize;
@@ -101,7 +102,7 @@ Status loadReconsConfig(const std::string& path, ReconsConfig& config)
     (void)json.getBool("saveStagePointClouds", parsed.saveStagePointClouds);
     (void)json.getString("calibResultPath", parsed.calibResultPath);
 
-    status = requirePositive("image_width", parsed.imageWidth);
+    Status status = requirePositive("image_width", parsed.imageWidth);
     if (!status.ok()) {
         return status;
     }
@@ -214,6 +215,46 @@ Status loadReconsConfig(const std::string& path, ReconsConfig& config)
 
     config = std::move(parsed);
     return {};
+}
+
+} // namespace
+
+Status loadReconsConfig(const std::string& path, ReconsConfig& config)
+{
+    JsonObject json("{}");
+    Status status = loadConfigJsonObject(path, json);
+    if (!status.ok()) {
+        return status;
+    }
+
+    return parseReconsConfigObject(json, ReconsConfig {}, config);
+}
+
+Status loadReconsConfigWithBase(const std::string& basePath,
+                                const std::string& overridePath,
+                                ReconsConfig& config)
+{
+    if (basePath.empty()) {
+        return loadReconsConfig(overridePath, config);
+    }
+
+    ReconsConfig seed;
+    Status status = loadReconsConfig(basePath, seed);
+    if (!status.ok()) {
+        status.message = "base config: " + status.message;
+        return status;
+    }
+
+    JsonObject overrideJson("{}");
+    status = loadConfigJsonObject(overridePath, overrideJson);
+    if (!status.ok()) {
+        status.message = "override config: " + status.message;
+        return status;
+    }
+
+    // 数据集 JSON 经常只描述标定/实验参数。显式 base 让生产默认值可继承，
+    // 同时保留 loadReconsConfig(path) 的旧配置兼容语义。
+    return parseReconsConfigObject(overrideJson, std::move(seed), config);
 }
 
 std::string summarizeConfig(const ReconsConfig& config)
