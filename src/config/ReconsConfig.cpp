@@ -47,6 +47,8 @@ Status parseReconsConfigObject(const JsonObject& json, ReconsConfig parsed, Reco
     (void)json.getIntArray("freqSeries", parsed.freqSeries);
     (void)json.getInt("freq23", parsed.freq23);
     (void)json.getInt("Bmin", parsed.bMin);
+    (void)json.getDouble("phaseMinModulation", parsed.phaseMinModulation);
+    (void)json.getDouble("phaseMinMeanModulation", parsed.phaseMinMeanModulation);
     (void)json.getInt("winSizeMedian", parsed.medianKernelSize);
     (void)json.getIntArray("phaseStepCounts", parsed.phaseStepCounts);
     (void)json.getInt("phaseStepDirection", parsed.phaseStepDirection);
@@ -139,6 +141,12 @@ Status parseReconsConfigObject(const JsonObject& json, ReconsConfig parsed, Reco
     if (parsed.bMin < -1) {
         return {StatusCode::ConfigInvalidValue, "ReconsConfig", "Bmin must be -1 or non-negative"};
     }
+    if (parsed.phaseMinModulation < -1.0 || parsed.phaseMinModulation > 1.0) {
+        return {StatusCode::ConfigInvalidValue, "ReconsConfig", "phaseMinModulation must be -1 or in [0, 1]"};
+    }
+    if (parsed.phaseMinMeanModulation < 0.0 || parsed.phaseMinMeanModulation > 1.0) {
+        return {StatusCode::ConfigInvalidValue, "ReconsConfig", "phaseMinMeanModulation must be in [0, 1]"};
+    }
     if (parsed.medianKernelSize != -1 && parsed.medianKernelSize <= 0) {
         return {StatusCode::ConfigInvalidValue, "ReconsConfig", "winSizeMedian must be -1 or positive"};
     }
@@ -174,8 +182,9 @@ Status parseReconsConfigObject(const JsonObject& json, ReconsConfig parsed, Reco
         parsed.matchingRightPhaseMinSlope < 0.0) {
         return {StatusCode::ConfigInvalidValue, "ReconsConfig", "right phase monotonic radius/slope are invalid"};
     }
-    if (parsed.matchingCandidateMinModulation < 0.0) {
-        return {StatusCode::ConfigInvalidValue, "ReconsConfig", "matchingCandidateMinModulation must be non-negative"};
+    if (parsed.matchingCandidateMinModulation < 0.0 ||
+        parsed.matchingCandidateMinModulation > 1.0) {
+        return {StatusCode::ConfigInvalidValue, "ReconsConfig", "matchingCandidateMinModulation must be in [0, 1]"};
     }
     if (parsed.disparityLocalConsistencyRadius < 0 || parsed.disparityLocalConsistencyMinSupport < 0) {
         return {StatusCode::ConfigInvalidValue, "ReconsConfig", "disparity local consistency radius/support must be non-negative"};
@@ -203,6 +212,7 @@ Status parseReconsConfigObject(const JsonObject& json, ReconsConfig parsed, Reco
         return {StatusCode::ConfigInvalidValue, "ReconsConfig", "clear255 requires three auxiliary projector indices"};
     }
     if (parsed.qualityInfoMinModulation < 0.0 ||
+        parsed.qualityInfoMinModulation > 1.0 ||
         parsed.qualityInfoPhaseCostThreshold <= 0.0 ||
         parsed.qualityInfoMaxCandidateCount <= 0 ||
         parsed.qualityInfoHoleEdgeRadius < 0 ||
@@ -276,6 +286,8 @@ std::string summarizeConfig(const ReconsConfig& config)
         << ", STEP=" << config.stepCount
         << ", freq23=" << config.freq23
         << ", Bmin=" << config.bMin
+        << ", phaseMinModulation=" << config.phaseMinModulation
+        << ", phaseMinMeanModulation=" << config.phaseMinMeanModulation
         << ", winSizeMedian=" << config.medianKernelSize
         << ", freqSeries=[";
     for (std::size_t i = 0; i < config.freqSeries.size(); ++i) {

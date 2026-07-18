@@ -478,6 +478,7 @@ __global__ void computeRectifiedHighFrequencyQualityKernel(
     const int pixelCount = width * height;
     float sinSum = 0.0F;
     float cosSum = 0.0F;
+    float intensitySum = 0.0F;
     unsigned char flags = 0U;
     for (int step = 0; step < weights.stepCount; ++step) {
         const float value = sampleBilinearGrayU8(
@@ -492,12 +493,19 @@ __global__ void computeRectifiedHighFrequencyQualityKernel(
         if (value <= 10.0F) {
             flags |= 2U;
         }
+        intensitySum += value;
         sinSum += value * weights.sinWeights[step];
         cosSum += value * weights.cosWeights[step];
     }
-    modulation[idx] = weights.stepCount > 1
+    const float meanIntensity = weights.stepCount > 0
+        ? intensitySum / static_cast<float>(weights.stepCount)
+        : 0.0F;
+    const float amplitude = weights.stepCount > 1
         ? 2.0F * sqrtf(sinSum * sinSum + cosSum * cosSum) /
             static_cast<float>(weights.stepCount)
+        : CUDART_NAN_F;
+    modulation[idx] = (flags & 4U) == 0U && meanIntensity > 0.0F
+        ? amplitude / meanIntensity
         : CUDART_NAN_F;
     lightFlags[idx] = flags;
 }

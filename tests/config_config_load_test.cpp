@@ -31,6 +31,8 @@ int main()
     require(config.freqSeries.size() == 3, "expected freqSeries size");
     require(config.freq23 == 7, "expected freq23 from config");
     require(config.bMin == 1, "expected Bmin from config");
+    require(config.phaseMinModulation == 0.1, "expected phase modulation threshold from config");
+    require(config.phaseMinMeanModulation == 0.0, "expected disabled mean phase modulation gate from config");
     require(config.medianKernelSize == 5, "expected winSizeMedian from config");
     require(config.phaseStepCounts.size() == 3, "expected phaseStepCounts size");
     require(config.phaseStepCounts[0] == 5, "expected low frequency 5-step production contract");
@@ -51,7 +53,7 @@ int main()
     require(!config.matchingRejectOnSubpixelFailure, "expected subpixel-failure reject disabled by default");
     require(!config.matchingCandidateQualityFilterEnabled,
             "expected matching candidate quality filter disabled by default");
-    require(config.matchingCandidateMinModulation == 8.0,
+    require(config.matchingCandidateMinModulation == 0.1,
             "expected matching candidate modulation threshold from config");
     require(config.matchingCandidateRejectSaturation,
             "expected matching candidate saturation rejection flag from config");
@@ -68,6 +70,8 @@ int main()
     require(config.clear255DilateRadius == 3, "expected production clear255 radius");
     require(config.colorHighlightCompressionEnabled,
             "expected production non-metal highlight compression enabled");
+    require(config.qualityInfoMinModulation == 0.1,
+            "expected quality info modulation threshold from config");
     require(!config.phaseDiagnosticsEnabled, "expected phase diagnostics disabled by default");
     require(!config.matchingDiagnosticsEnabled, "expected matching diagnostics disabled by default");
     require(!config.pointCloudStageDiagnosticsEnabled,
@@ -93,8 +97,12 @@ int main()
             "expected missing subpixel-failure reject key to remain disabled");
     require(!legacyCompatible.matchingCandidateQualityFilterEnabled,
             "expected missing candidate-quality key to remain disabled");
-    require(legacyCompatible.matchingCandidateMinModulation == 8.0,
+    require(legacyCompatible.phaseMinModulation == 0.1,
+            "expected compatible phase modulation default");
+    require(legacyCompatible.matchingCandidateMinModulation == 0.1,
             "expected compatible matching candidate modulation default");
+    require(legacyCompatible.qualityInfoMinModulation == 0.1,
+            "expected compatible quality info modulation default");
     require(!legacyCompatible.disparitySubpixelEnabled, "expected missing subpixel key to remain disabled");
     require(!legacyCompatible.pointCloudSmoothingEnabled, "expected missing smoothing key to remain disabled");
     require(!legacyCompatible.pointCloudFilterEnabled, "expected missing point-cloud filter key to remain disabled");
@@ -147,7 +155,7 @@ int main()
         std::filesystem::temp_directory_path() / "rof_matching_constraints_config.json";
     {
         std::ofstream out(matchingConstraintPath);
-        out << R"({"matchingRejectOnSubpixelFailure":true,"matchingCandidateQualityFilterEnabled":true,"matchingCandidateMinModulation":12.5,"matchingCandidateRejectSaturation":false,"matchingCandidateRejectLowLight":false})";
+        out << R"({"phaseMinModulation":-1,"matchingRejectOnSubpixelFailure":true,"matchingCandidateQualityFilterEnabled":true,"matchingCandidateMinModulation":0.25,"matchingCandidateRejectSaturation":false,"matchingCandidateRejectLowLight":false})";
     }
     ReconsConfig matchingConstraintConfig;
     status = loadReconsConfig(matchingConstraintPath.string(), matchingConstraintConfig);
@@ -157,7 +165,9 @@ int main()
             "expected subpixel-failure reject parse true");
     require(matchingConstraintConfig.matchingCandidateQualityFilterEnabled,
             "expected matching candidate quality parse true");
-    require(matchingConstraintConfig.matchingCandidateMinModulation == 12.5,
+    require(matchingConstraintConfig.phaseMinModulation == -1.0,
+            "expected phase modulation gate disable override");
+    require(matchingConstraintConfig.matchingCandidateMinModulation == 0.25,
             "expected matching candidate modulation override");
     require(!matchingConstraintConfig.matchingCandidateRejectSaturation,
             "expected matching candidate saturation override false");
@@ -169,6 +179,18 @@ int main()
     require(status.code == StatusCode::ConfigMissing, "expected missing base config to fail");
     require(status.message.find("base config:") != std::string::npos,
             "expected missing base config error to identify the base layer");
+
+    const auto invalidModulationPath =
+        std::filesystem::temp_directory_path() / "rof_invalid_modulation_config.json";
+    {
+        std::ofstream out(invalidModulationPath);
+        out << R"({"matchingCandidateMinModulation":8.0})";
+    }
+    ReconsConfig invalidModulation;
+    status = loadReconsConfig(invalidModulationPath.string(), invalidModulation);
+    std::filesystem::remove(invalidModulationPath);
+    require(status.code == StatusCode::ConfigInvalidValue,
+            "expected old grayscale-amplitude modulation threshold to fail");
 
     const auto invalidColorPath = std::filesystem::temp_directory_path() / "rof_invalid_color_config.json";
     {

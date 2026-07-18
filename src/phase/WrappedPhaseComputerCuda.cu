@@ -54,6 +54,7 @@ __global__ void computeWrappedPhaseKernel(const unsigned char* const* steps,
                                           int pixelCount,
                                           int direction,
                                           int bMin,
+                                          float minModulation,
                                           RemapCalibration remap,
                                           int useRectification,
                                           float* phase,
@@ -65,6 +66,7 @@ __global__ void computeWrappedPhaseKernel(const unsigned char* const* steps,
     if (pixel < pixelCount) {
         float sinSum = 0.0F;
         float cosSum = 0.0F;
+        float intensitySum = 0.0F;
         // Rectify each intensity sample before atan2/fringe-order computation.
         // Remapping the final phase is mathematically different at phase wraps.
         float sourceX = static_cast<float>(pixel % width);
@@ -81,12 +83,18 @@ __global__ void computeWrappedPhaseKernel(const unsigned char* const* steps,
                 break;
             }
             const float angle = sign * 2.0F * kPi * static_cast<float>(step) / static_cast<float>(stepCount);
+            intensitySum += intensity;
             sinSum += intensity * sinf(angle);
             cosSum += intensity * cosf(angle);
         }
         if (valid) {
-            modulationValue = 2.0F * sqrtf(sinSum * sinSum + cosSum * cosSum) / static_cast<float>(stepCount);
-            phase[pixel] = (bMin != -1 && modulationValue < static_cast<float>(bMin))
+            const float meanIntensity = intensitySum / static_cast<float>(stepCount);
+            const float amplitude = 2.0F * sqrtf(sinSum * sinSum + cosSum * cosSum) /
+                static_cast<float>(stepCount);
+            modulationValue = meanIntensity > 0.0F ? amplitude / meanIntensity : 0.0F;
+            const bool amplitudePasses = bMin == -1 || amplitude >= static_cast<float>(bMin);
+            const bool modulationPasses = minModulation < 0.0F || modulationValue >= minModulation;
+            phase[pixel] = (!amplitudePasses || !modulationPasses)
                 ? CUDART_NAN_F
                 : atan2f(-sinSum, cosSum);
             modulation[pixel] = modulationValue;
@@ -213,6 +221,7 @@ Status computeOneCuda(CameraSide camera,
                       const std::vector<StripeImage>& images,
                       const StripeRequirement& requirement,
                       int bMin,
+                      double minModulation,
                       const RemapCalibration* remap,
                       WrappedPhaseFrequencyResult& output,
                       WrappedPhaseWorkspace& workspace,
@@ -239,7 +248,7 @@ Status computeOneCuda(CameraSide camera,
     } else {
         output.modulation.clear();
     }
-    output.validPixelCount = static_cast<std::size_t>(pixelCount);
+    output.validPixelCount = 0;
 
     workspace.images.resize(static_cast<std::size_t>(requirement.requiredPhaseSteps));
     std::vector<const unsigned char*> deviceImagePtrs(static_cast<std::size_t>(requirement.requiredPhaseSteps), nullptr);
@@ -313,6 +322,7 @@ Status computeOneCuda(CameraSide camera,
         pixelCount,
         requirement.phaseStepDirection,
         bMin,
+        static_cast<float>(minModulation),
         remapValue,
         remap == nullptr ? 0 : 1,
         static_cast<float*>(workspace.phase.ptr),
@@ -349,8 +359,10 @@ Status computeOneCuda(CameraSide camera,
     if (!status.ok()) {
         return status;
     }
-    output.meanModulation = static_cast<double>(modulationStats[0]) / static_cast<double>(pixelCount);
-    output.minModulation = modulationStats[1];
+    output.meanModulation = pixelCount == 0
+        ? 0.0
+        : static_cast<double>(modulationStats[0]) / static_cast<double>(pixelCount);
+    output.minModulation = pixelCount == 0 ? 0.0 : modulationStats[1];
     output.maxModulation = modulationStats[2];
     return {};
 }
@@ -416,12 +428,14 @@ WrappedPhaseResult computeWrappedPhaseCudaImpl(const StripeFrameGroup& frame,
         result.coordinateDomain = PhaseCoordinateDomain::Rectified;
     }
 
+    std::size_t validPhasePixelCount = 0;
     for (const StripeRequirement& requirement : config.stripeRequirements) {
         WrappedPhaseFrequencyResult left;
         Status status = computeOneCuda(CameraSide::Left,
                                         frame.leftStripes,
                                         requirement,
                                         config.bMin,
+                                        config.phaseMinModulation,
                                         rectificationAvailable ? &leftRemap : nullptr,
                                        left,
                                        workspace,
@@ -437,6 +451,7 @@ WrappedPhaseResult computeWrappedPhaseCudaImpl(const StripeFrameGroup& frame,
                                  frame.rightStripes,
                                  requirement,
                                  config.bMin,
+                                 config.phaseMinModulation,
                                  rectificationAvailable ? &rightRemap : nullptr,
                                 right,
                                 workspace,
@@ -450,6 +465,7 @@ WrappedPhaseResult computeWrappedPhaseCudaImpl(const StripeFrameGroup& frame,
         result.stats.validImageCount += static_cast<std::size_t>(requirement.requiredPhaseSteps) * 2;
         result.stats.checkedPixels += left.phase.size() + right.phase.size();
         result.stats.cudaComputedPixels += left.phase.size() + right.phase.size();
+        validPhasePixelCount += left.validPixelCount + right.validPixelCount;
         result.stats.meanPixelValue += left.meanModulation + right.meanModulation;
         result.frequencies.push_back(std::move(left));
         result.frequencies.push_back(std::move(right));
@@ -458,8 +474,13 @@ WrappedPhaseResult computeWrappedPhaseCudaImpl(const StripeFrameGroup& frame,
     if (!result.frequencies.empty()) {
         result.stats.meanPixelValue /= static_cast<double>(result.frequencies.size());
     }
-    if (result.stats.meanPixelValue < options.minMeanModulation) {
-        result.status = {StatusCode::PhaseQualityInsufficient, "WrappedPhaseComputerCuda", "CUDA wrapped phase mean modulation is below threshold"};
+    result.stats.rejectedImageCount = result.stats.checkedPixels > validPhasePixelCount
+        ? result.stats.checkedPixels - validPhasePixelCount
+        : 0U;
+    const double minMeanModulation = std::max(options.minMeanModulation, config.phaseMinMeanModulation);
+    if (validPhasePixelCount == 0U ||
+        result.stats.meanPixelValue < minMeanModulation) {
+        result.status = {StatusCode::PhaseQualityInsufficient, "WrappedPhaseComputerCuda", "CUDA wrapped phase modulation is below threshold"};
         result.stats.status = result.status;
         return result;
     }

@@ -484,7 +484,7 @@ int main()
 
     ReconsConfig qualityRejectConfig = denseRawConfig;
     qualityRejectConfig.matchingCandidateQualityFilterEnabled = true;
-    qualityRejectConfig.matchingCandidateMinModulation = 8.0;
+    qualityRejectConfig.matchingCandidateMinModulation = 0.1;
     PointCloudReconstructionResult qualityRejected =
         reconstructPointCloudCuda(densePhase, denseCalibration, qualityRejectConfig, denseFrame, matchingOptions);
     require(qualityRejected.matchingSummary.find("matchingQualityFilterActive=true") != std::string::npos,

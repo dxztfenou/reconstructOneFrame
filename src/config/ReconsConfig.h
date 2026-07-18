@@ -23,6 +23,8 @@ struct ReconsConfig {
     std::vector<int> freqSeries = {15, 21, 28};
     int freq23 = 7;
     int bMin = 1;
+    double phaseMinModulation = 0.1;
+    double phaseMinMeanModulation = 0.0;
     int medianKernelSize = 5;
     std::vector<int> phaseStepCounts;
     int phaseStepDirection = -1;
@@ -47,7 +49,7 @@ struct ReconsConfig {
     double matchingRightPhaseMinSlope = 0.0001;
     bool matchingRejectOnSubpixelFailure = false;
     bool matchingCandidateQualityFilterEnabled = false;
-    double matchingCandidateMinModulation = 8.0;
+    double matchingCandidateMinModulation = 0.1;
     bool matchingCandidateRejectSaturation = true;
     bool matchingCandidateRejectLowLight = true;
     bool disparitySubpixelEnabled = false;
@@ -69,7 +71,7 @@ struct ReconsConfig {
     int clear255DilateRadius = 3;
     bool colorHighlightCompressionEnabled = false;
     bool qualityInfoEnabled = true;
-    double qualityInfoMinModulation = 8.0;
+    double qualityInfoMinModulation = 0.1;
     bool qualityInfoReasonChannelEnabled = true;
     double qualityInfoPhaseCostThreshold = 0.2;
     int qualityInfoMaxCandidateCount = 3;

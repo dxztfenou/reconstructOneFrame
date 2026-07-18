@@ -38,7 +38,7 @@ struct WrappedPhaseResult {
 };
 
 struct WrappedPhaseOptions {
-    double minMeanModulation = 1.0;
+    double minMeanModulation = 0.0;
     bool preferCuda = true;
     bool materializeModulation = true;
 };

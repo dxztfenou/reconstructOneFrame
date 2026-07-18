@@ -127,23 +127,24 @@ int main()
     Status status = loadReconsConfig("config/reconsAlgPara.json", config);
     require(status.ok(), "expected config load");
 
-    ManifestFrame frame = loadManifestFrame("tests/data/phase2_valid_manifest.json");
-    WrappedPhaseResult result = computeWrappedPhaseCpuReference(frame.frame, config);
+    ReconsConfig spatialConfig = config;
+    spatialConfig.imageWidth = 4;
+    spatialConfig.imageHeight = 4;
+    OwnedStripeFrame spatialFrame = makeSpatialPhaseFrame(spatialConfig);
+
+    WrappedPhaseResult result = computeWrappedPhaseCpuReference(spatialFrame.frame, spatialConfig);
     require(result.status.ok(), "expected wrapped phase to compute");
     require(result.stats.stageName == "wrapped_phase_compute", "expected wrapped phase stage");
     require(result.frequencies.size() == 6, "expected left/right results for three frequencies");
     require(result.frequencies[0].phase.size() == 16, "expected per-pixel phase output");
     require(result.frequencies[0].modulation.size() == 16, "expected per-pixel modulation output");
-    require(result.stats.meanPixelValue > 1.0, "expected non-trivial mean modulation");
+    require(result.stats.meanPixelValue > 0.1 && result.stats.meanPixelValue < 1.0,
+            "expected normalized fringe modulation");
 
     ManifestFrame lowModulation = loadManifestFrame("tests/data/phase3_low_modulation_manifest.json");
     result = computeWrappedPhaseCpuReference(lowModulation.frame, config);
     require(result.status.code == StatusCode::PhaseQualityInsufficient, "expected low modulation failure");
 
-    ReconsConfig spatialConfig = config;
-    spatialConfig.imageWidth = 4;
-    spatialConfig.imageHeight = 4;
-    OwnedStripeFrame spatialFrame = makeSpatialPhaseFrame(spatialConfig);
     WrappedPhaseResult sensor = computeWrappedPhaseCuda(spatialFrame.frame, spatialConfig);
     require(sensor.status.ok(), "expected sensor-domain CUDA phase");
     OwnedStripeFrame lowContrastFrame = makeSpatialPhaseFrame(spatialConfig);
@@ -152,12 +153,20 @@ int main()
     require(lowContrast.status.ok(), "expected low-contrast CUDA phase to finish");
     require(!lowContrast.frequencies.empty(), "expected low-contrast frequency outputs");
     require(lowContrast.frequencies.front().validPixelCount == 15,
-            "expected Bmin gate to invalidate only the low-modulation pixel");
+            "expected modulation gate to invalidate only the low-modulation pixel");
     require(std::isnan(lowContrast.frequencies.front().phase[5]),
-            "expected Bmin gate to write NaN for low-modulation wrapped phase");
+            "expected modulation gate to write NaN for low-modulation wrapped phase");
     require(lowContrast.frequencies.front().modulation.size() > 5U &&
-                lowContrast.frequencies.front().modulation[5] < 1.0F,
+                lowContrast.frequencies.front().modulation[5] < 0.1F,
             "expected low modulation to remain materialized for diagnostics");
+
+    ReconsConfig amplitudeGateConfig = spatialConfig;
+    amplitudeGateConfig.bMin = 80;
+    WrappedPhaseResult amplitudeRejected = computeWrappedPhaseCuda(
+        spatialFrame.frame, amplitudeGateConfig);
+    require(amplitudeRejected.status.code == StatusCode::PhaseQualityInsufficient,
+            "expected Bmin to remain as a raw grayscale amplitude gate");
+
     CalibrationModel shiftCalibration = makeOnePixelShiftCalibration();
     WrappedPhaseResult rectified = computeWrappedPhaseCuda(spatialFrame.frame, spatialConfig, shiftCalibration);
     require(rectified.status.ok(), "expected rectified CUDA phase");

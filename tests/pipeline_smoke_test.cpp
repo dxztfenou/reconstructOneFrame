@@ -1,5 +1,7 @@
 #include "reconstruct_one_frame/reconstructInterface.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <iostream>
 #include <vector>
@@ -26,17 +28,44 @@ StripeFrameGroup makeFrame()
     rightBuffers.reserve(15);
 
     StripeFrameGroup frame;
+    constexpr int width = 4;
+    constexpr int height = 4;
+    constexpr double pi = 3.14159265358979323846;
+    auto fillStripe = [](std::vector<unsigned char>& pixels,
+                         int frequency,
+                         int step,
+                         double cameraOffset) {
+        constexpr int width = 4;
+        constexpr int height = 4;
+        constexpr double pi = 3.14159265358979323846;
+        pixels.resize(width * height);
+        for (int y = 0; y < height; ++y) {
+            for (int x = 0; x < width; ++x) {
+                const double spatialPhase =
+                    0.31 * static_cast<double>(x) +
+                    0.07 * static_cast<double>(frequency) +
+                    cameraOffset;
+                const double stepAngle = 2.0 * pi * static_cast<double>(step) / 5.0;
+                const int value = static_cast<int>(
+                    std::lround(128.0 + 70.0 * std::cos(spatialPhase + stepAngle)));
+                pixels[static_cast<std::size_t>(y * width + x)] =
+                    static_cast<unsigned char>(std::clamp(value, 0, 255));
+            }
+        }
+    };
     for (int frequency = 0; frequency < 3; ++frequency) {
         for (int step = 0; step < 5; ++step) {
-            leftBuffers.emplace_back(16, static_cast<unsigned char>(17 + frequency * 10 + step));
-            rightBuffers.emplace_back(16, static_cast<unsigned char>(47 + frequency * 10 + step));
+            leftBuffers.emplace_back();
+            rightBuffers.emplace_back();
+            fillStripe(leftBuffers.back(), frequency, step, 0.0);
+            fillStripe(rightBuffers.back(), frequency, step, 0.11);
 
             ImageView leftView;
             leftView.data = leftBuffers.back().data();
-            leftView.width = 4;
-            leftView.height = 4;
+            leftView.width = width;
+            leftView.height = height;
             leftView.channels = 1;
-            leftView.strideBytes = 4;
+            leftView.strideBytes = width;
             leftView.elementType = ImageElementType::UInt8;
 
             ImageView rightView = leftView;

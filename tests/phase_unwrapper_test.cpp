@@ -94,6 +94,7 @@ int main()
     ReconsConfig config;
     Status status = loadReconsConfig("config/reconsAlgPara.json", config);
     require(status.ok(), "expected config load");
+    config.phaseMinModulation = -1.0;
 
     ManifestFrame frame = loadManifestFrame("tests/data/phase2_valid_manifest.json");
     WrappedPhaseResult wrapped = computeWrappedPhaseCuda(frame.frame, config);

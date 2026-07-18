@@ -50,6 +50,7 @@ std::vector<const StripeImage*> collectFrequencySteps(const std::vector<StripeIm
 Status computeOne(CameraSide camera,
                   const std::vector<StripeImage>& images,
                   const StripeRequirement& requirement,
+                  const ReconsConfig& config,
                   WrappedPhaseFrequencyResult& output)
 {
     const std::vector<const StripeImage*> steps =
@@ -69,7 +70,7 @@ Status computeOne(CameraSide camera,
     output.height = first.height;
     output.phase.assign(pixelCount, 0.0F);
     output.modulation.assign(pixelCount, 0.0F);
-    output.validPixelCount = pixelCount;
+    output.validPixelCount = 0;
 
     double modulationSum = 0.0;
     double minModulation = std::numeric_limits<double>::infinity();
@@ -79,18 +80,31 @@ Status computeOne(CameraSide camera,
     for (std::size_t pixel = 0; pixel < pixelCount; ++pixel) {
         double sinSum = 0.0;
         double cosSum = 0.0;
+        double intensitySum = 0.0;
         for (int step = 0; step < requirement.requiredPhaseSteps; ++step) {
             const double intensity = readPixelAsDouble(steps[static_cast<std::size_t>(step)]->image, pixel);
             const double angle = direction * 2.0 * kPi * static_cast<double>(step) / static_cast<double>(requirement.requiredPhaseSteps);
+            intensitySum += intensity;
             sinSum += intensity * std::sin(angle);
             cosSum += intensity * std::cos(angle);
         }
 
-        const double phase = std::atan2(-sinSum, cosSum);
-        const double modulation = 2.0 * std::sqrt(sinSum * sinSum + cosSum * cosSum) /
+        const double meanIntensity = intensitySum /
             static_cast<double>(requirement.requiredPhaseSteps);
-        output.phase[pixel] = static_cast<float>(phase);
+        const double amplitude = 2.0 * std::sqrt(sinSum * sinSum + cosSum * cosSum) /
+            static_cast<double>(requirement.requiredPhaseSteps);
+        const double modulation = meanIntensity > 0.0 ? amplitude / meanIntensity : 0.0;
+        const bool amplitudePasses = config.bMin == -1 ||
+            amplitude >= static_cast<double>(config.bMin);
+        const bool modulationPasses = config.phaseMinModulation < 0.0 ||
+            modulation >= config.phaseMinModulation;
+        output.phase[pixel] = (amplitudePasses && modulationPasses)
+            ? static_cast<float>(std::atan2(-sinSum, cosSum))
+            : std::numeric_limits<float>::quiet_NaN();
         output.modulation[pixel] = static_cast<float>(modulation);
+        if (std::isfinite(output.phase[pixel])) {
+            ++output.validPixelCount;
+        }
         modulationSum += modulation;
         minModulation = std::min(minModulation, modulation);
         maxModulation = std::max(maxModulation, modulation);
@@ -111,17 +125,18 @@ WrappedPhaseResult computeWrappedPhaseCpuReference(const StripeFrameGroup& frame
     WrappedPhaseResult result;
     result.stats.stageName = "wrapped_phase_compute";
     result.stats.inputImageCount = frame.leftStripes.size() + frame.rightStripes.size();
+    std::size_t validPhasePixelCount = 0;
 
     for (const StripeRequirement& requirement : config.stripeRequirements) {
         WrappedPhaseFrequencyResult left;
-        Status status = computeOne(CameraSide::Left, frame.leftStripes, requirement, left);
+        Status status = computeOne(CameraSide::Left, frame.leftStripes, requirement, config, left);
         if (!status.ok()) {
             result.status = status;
             result.stats.status = status;
             return result;
         }
         WrappedPhaseFrequencyResult right;
-        status = computeOne(CameraSide::Right, frame.rightStripes, requirement, right);
+        status = computeOne(CameraSide::Right, frame.rightStripes, requirement, config, right);
         if (!status.ok()) {
             result.status = status;
             result.stats.status = status;
@@ -133,6 +148,7 @@ WrappedPhaseResult computeWrappedPhaseCpuReference(const StripeFrameGroup& frame
         }
         result.stats.validImageCount += static_cast<std::size_t>(requirement.requiredPhaseSteps) * 2;
         result.stats.checkedPixels += left.phase.size() + right.phase.size();
+        validPhasePixelCount += left.validPixelCount + right.validPixelCount;
         result.stats.meanPixelValue += left.meanModulation + right.meanModulation;
         result.frequencies.push_back(std::move(left));
         result.frequencies.push_back(std::move(right));
@@ -141,8 +157,13 @@ WrappedPhaseResult computeWrappedPhaseCpuReference(const StripeFrameGroup& frame
     if (!result.frequencies.empty()) {
         result.stats.meanPixelValue /= static_cast<double>(result.frequencies.size());
     }
-    if (result.stats.meanPixelValue < options.minMeanModulation) {
-        result.status = {StatusCode::PhaseQualityInsufficient, "WrappedPhaseComputer", "wrapped phase mean modulation is below threshold"};
+    result.stats.rejectedImageCount = result.stats.checkedPixels > validPhasePixelCount
+        ? result.stats.checkedPixels - validPhasePixelCount
+        : 0U;
+    const double minMeanModulation = std::max(options.minMeanModulation, config.phaseMinMeanModulation);
+    if (validPhasePixelCount == 0U ||
+        result.stats.meanPixelValue < minMeanModulation) {
+        result.status = {StatusCode::PhaseQualityInsufficient, "WrappedPhaseComputer", "wrapped phase modulation is below threshold"};
         result.stats.status = result.status;
         return result;
     }
