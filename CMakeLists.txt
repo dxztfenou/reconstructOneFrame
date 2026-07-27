@@ -63,7 +63,6 @@ target_link_libraries(rofCore
 )
 
 add_library(reconstructOneFrame SHARED
-    src/dssi/DssiThreeScanCompat.cpp
     src/plugin/RofCApi.cpp
 )
 

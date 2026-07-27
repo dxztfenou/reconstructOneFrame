@@ -1,6 +1,5 @@
 #include "reconstruct_one_frame/rof_c_api.h"
 
-#include <cstddef>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -16,22 +15,29 @@ void require(bool condition, const char* message)
     }
 }
 
-RofStatusV1 makeStatus()
+RofStatus makeStatus()
 {
-    RofStatusV1 status {};
+    RofStatus status {};
     status.struct_size = sizeof(status);
     return status;
 }
 
-RofSessionConfigV1 makeConfig(const std::string& configPath, const std::string& calibrationPath)
+RofRuntimeInitOptions makeRuntimeInit()
 {
-    RofSessionConfigV1 config {};
+    RofRuntimeInitOptions options {};
+    options.struct_size = sizeof(options);
+    return options;
+}
+
+RofConfigOptions makeConfig(const std::string& configPath, const std::string& calibrationPath)
+{
+    RofConfigOptions config {};
     config.struct_size = sizeof(config);
     config.config_path = configPath.data();
     config.config_path_size = configPath.size();
     config.calibration_path = calibrationPath.data();
     config.calibration_path_size = calibrationPath.size();
-    config.output_mask = ROF_OUTPUT_ALL_V1;
+    config.output_mask = ROF_OUTPUT_ALL;
     return config;
 }
 
@@ -39,35 +45,42 @@ RofSessionConfigV1 makeConfig(const std::string& configPath, const std::string& 
 
 int main()
 {
-    RofApiV1 api {};
+    RofApi api {};
     api.struct_size = sizeof(api);
-    require(rof_get_api(ROF_ABI_MAJOR_V1, ROF_ABI_MINOR_V1, sizeof(api), &api) == ROF_STATUS_OK_V1,
-            "ABI v1 negotiation must succeed");
-    require(api.abi_major == ROF_ABI_MAJOR_V1 && api.abi_minor == ROF_ABI_MINOR_V1,
-            "negotiated ABI version must be v1");
+    require(rof_get_api(ROF_ABI_MAJOR, ROF_ABI_MINOR, sizeof(api), &api) == ROF_STATUS_OK,
+            "ABI v2 negotiation must succeed");
+    require(api.abi_major == ROF_ABI_MAJOR && api.abi_minor == ROF_ABI_MINOR,
+            "negotiated ABI version must be v2");
     require(std::strcmp(api.plugin_id, "reconstructOneFrame") == 0,
             "plugin id must identify reconstructOneFrame");
-    require(api.create_session && api.get_capture_plan && api.get_camera_model &&
-            api.process_frame && api.copy_last_error && api.drain && api.destroy_session,
-            "all v1 function pointers must be populated");
-    require((api.capabilities & ROF_CAPABILITY_FRAME_FLAGS_V1) != 0U &&
-                (api.capabilities & ROF_CAPABILITY_METAL_SCAN_MODE_V1) != 0U &&
-                (api.capabilities & ROF_CAPABILITY_AI_SCAN_MODE_V1) == 0U,
-            "plugin must advertise metal frame flags without claiming AI support");
+    require(api.init && api.set_config && api.get_capture_plan && api.get_camera_model &&
+                api.calc && api.copy_last_error && api.shutdown && api.destroy,
+            "all v2 function pointers must be populated");
+    require((api.capabilities & ROF_CAPABILITY_INIT_SETCONFIG_CALC) != 0U &&
+                (api.capabilities & ROF_CAPABILITY_FRAME_FLAGS) != 0U &&
+                (api.capabilities & ROF_CAPABILITY_METAL_SCAN_MODE) != 0U &&
+                (api.capabilities & ROF_CAPABILITY_AI_SCAN_MODE) == 0U,
+            "plugin must advertise init/setConfig/calc and metal frame flags without claiming AI support");
 
-    RofApiV1 incompatible {};
+    RofApi incompatible {};
     incompatible.struct_size = sizeof(incompatible);
-    require(rof_get_api(2U, 0U, sizeof(incompatible), &incompatible) == ROF_STATUS_ABI_MISMATCH_V1,
+    require(rof_get_api(ROF_ABI_MAJOR + 1U, 0U, sizeof(incompatible), &incompatible) ==
+                ROF_STATUS_ABI_MISMATCH,
             "unsupported ABI major must fail closed");
+
+    RofRuntimeInitOptions runtimeInit = makeRuntimeInit();
+    RofContextHandle context = nullptr;
+    RofStatus status = makeStatus();
+    require(api.init(&runtimeInit, &context, &status) == ROF_STATUS_OK,
+            "runtime init must create a context");
+    require(context != nullptr, "runtime init must publish a context");
 
     const std::string calibrationPath = "tests/data/phase2_valid_calibResult.json";
     const std::string missingConfigPath = "config/does_not_exist.json";
-    RofSessionConfigV1 missingConfig = makeConfig(missingConfigPath, calibrationPath);
-    RofSessionHandle session = nullptr;
-    RofStatusV1 status = makeStatus();
-    require(api.create_session(&missingConfig, &session, &status) == ROF_STATUS_CONFIG_ERROR_V1,
+    RofConfigOptions missingConfig = makeConfig(missingConfigPath, calibrationPath);
+    status = makeStatus();
+    require(api.set_config(context, &missingConfig, &status) == ROF_STATUS_CONFIG_ERROR,
             "missing config must return stable config error");
-    require(session == nullptr, "failed create must not publish a session");
 
     struct ErrorBufferWithCanary {
         std::uint32_t prefix = 0xA5A5A5A5U;
@@ -76,8 +89,8 @@ int main()
     } shortError;
     size_t requiredErrorSize = 0;
     require(api.copy_last_error(
-                nullptr, shortError.payload, sizeof(shortError.payload), &requiredErrorSize) ==
-                ROF_STATUS_BUFFER_TOO_SMALL_V1,
+                context, shortError.payload, sizeof(shortError.payload), &requiredErrorSize) ==
+                ROF_STATUS_BUFFER_TOO_SMALL,
             "short error buffer must report required capacity");
     require(requiredErrorSize > sizeof(shortError.payload) &&
                 shortError.payload[sizeof(shortError.payload) - 1U] == '\0',
@@ -86,27 +99,26 @@ int main()
             "bounded error copy must preserve surrounding canaries");
 
     const std::string configPath = "config/reconsAlgPara.json";
-    RofSessionConfigV1 validConfig = makeConfig(configPath, calibrationPath);
+    RofConfigOptions validConfig = makeConfig(configPath, calibrationPath);
     status = makeStatus();
-    require(api.create_session(&validConfig, &session, &status) == ROF_STATUS_OK_V1,
-            "valid session config must initialize");
-    require(session != nullptr, "successful create must publish a session");
+    require(api.set_config(context, &validConfig, &status) == ROF_STATUS_OK,
+            "valid config must initialize execution plan");
 
-    RofCapturePlanV1 plan {};
+    RofCapturePlan plan {};
     plan.struct_size = sizeof(plan);
     status = makeStatus();
-    require(api.get_capture_plan(session, &plan, &status) == ROF_STATUS_OK_V1,
-            "ready session must provide capture plan");
+    require(api.get_capture_plan(context, &plan, &status) == ROF_STATUS_OK,
+            "ready context must provide capture plan");
     require(plan.input_width == 424U && plan.input_height == 400U,
             "capture plan input size must match config");
     require(plan.live_image_count == 18U,
             "capture plan must include phase and color images");
-    require(plan.preferred_input_element_type == ROF_ELEMENT_UINT8_V1,
+    require(plan.preferred_input_element_type == ROF_ELEMENT_UINT8,
             "capture plan must prefer raw uint8 input");
-    require(plan.input_coordinate_space == ROF_COORDINATE_CALIBRATION_INPUT_V1,
+    require(plan.input_coordinate_space == ROF_COORDINATE_CALIBRATION_INPUT,
             "capture plan must name the calibration input coordinate space");
     require(plan.max_in_flight_frames == 1U,
-            "ABI v1 sessions must declare serial processing");
+            "v2 context must declare serial processing");
     require(plan.stripe_requirement_count == 3U &&
                 plan.stripe_requirements[0].required_phase_steps == 5 &&
                 plan.stripe_requirements[1].required_phase_steps == 5 &&
@@ -120,52 +132,41 @@ int main()
                 plan.auxiliary_projector_indices[2] == 18,
             "capture plan must expose auxiliary projector indices");
 
-    RofCapturePlanV1 legacyPlan {};
-    legacyPlan.struct_size = static_cast<std::uint32_t>(
-        offsetof(RofCapturePlanV1, preferred_input_element_type));
-    status = makeStatus();
-    require(api.get_capture_plan(session, &legacyPlan, &status) == ROF_STATUS_OK_V1 &&
-                legacyPlan.live_image_count == 18U,
-            "ABI v1.0 capture plan prefix must remain supported");
-
-    RofCameraModelV1 camera {};
+    RofCameraModel camera {};
     camera.struct_size = sizeof(camera);
     status = makeStatus();
-    require(api.get_camera_model(session, &camera, &status) == ROF_STATUS_OK_V1,
-            "ready session must provide camera model");
-    require(camera.model_type == ROF_CAMERA_MODEL_REPROJECTION_Q_4X4_V1 &&
+    require(api.get_camera_model(context, &camera, &status) == ROF_STATUS_OK,
+            "ready context must provide camera model");
+    require(camera.model_type == ROF_CAMERA_MODEL_REPROJECTION_Q_4X4 &&
                 camera.rows == 4U && camera.cols == 4U,
             "camera model must explicitly identify Q");
 
-    RofFrameInputV1 invalidInput {};
+    RofCalcInput invalidInput {};
     invalidInput.struct_size = sizeof(invalidInput);
-    RofFrameOutputV1 invalidOutput {};
+    RofCalcOutput invalidOutput {};
     invalidOutput.struct_size = sizeof(invalidOutput);
-    RofFrameMetricsV1 metrics {};
+    invalidOutput.output_mask = ROF_OUTPUT_ALL;
+    RofCalcMetrics metrics {};
     metrics.struct_size = sizeof(metrics);
     status = makeStatus();
-    invalidInput.struct_size = ROF_FRAME_INPUT_V11_SIZE_V1;
-    require(api.process_frame(session, &invalidInput, &invalidOutput, &metrics, &status) ==
-                ROF_STATUS_INPUT_ERROR_V1,
-            "ABI v1.1 frame input prefix must remain accepted");
-
-    invalidInput.struct_size = sizeof(invalidInput);
-    invalidInput.flags = ROF_FRAME_FLAG_AI_SCAN_V1;
-    status = makeStatus();
-    require(api.process_frame(session, &invalidInput, &invalidOutput, &metrics, &status) ==
-                ROF_STATUS_INPUT_ERROR_V1,
+    invalidInput.flags = ROF_FRAME_FLAG_AI_SCAN;
+    require(api.calc(context, &invalidInput, &invalidOutput, &metrics, &status) ==
+                ROF_STATUS_INPUT_ERROR,
             "unsupported AI frame mode must fail closed");
 
     invalidInput.flags = 0U;
     status = makeStatus();
-    require(api.process_frame(session, &invalidInput, &invalidOutput, &metrics, &status) ==
-                ROF_STATUS_INPUT_ERROR_V1,
-            "empty frame input must be rejected without crossing the ABI");
+    require(api.calc(context, &invalidInput, &invalidOutput, &metrics, &status) ==
+                ROF_STATUS_INPUT_ERROR,
+            "empty calc input must be rejected without crossing the core");
 
     status = makeStatus();
-    require(api.drain(session, &status) == ROF_STATUS_OK_V1,
-            "drain must be explicit and idempotent");
-    api.destroy_session(session);
+    require(api.shutdown(context, &status) == ROF_STATUS_OK,
+            "shutdown must be explicit and idempotent");
+    status = makeStatus();
+    require(api.get_capture_plan(context, &plan, &status) == ROF_STATUS_NOT_READY,
+            "capture plan after shutdown must fail not-ready");
+    api.destroy(context);
 
     return EXIT_SUCCESS;
 }

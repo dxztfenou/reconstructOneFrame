@@ -260,7 +260,7 @@ Status SingleFramePipeline::initialize(ReconsConfig config,
     return {};
 }
 
-FrameResult SingleFramePipeline::run(const StripeFrameGroup& frame) const
+FrameResult SingleFramePipeline::calc(const StripeFrameGroup& frame) const
 {
     FrameResult result;
     if (!initialized_) {

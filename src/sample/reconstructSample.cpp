@@ -241,9 +241,17 @@ int main(int argc, char** argv)
     const bool includeColor = options.writePly || !options.compareLegacyPlyPath.empty();
 
     ReconstructEngine engine;
-    Status status = engine.init(options);
+    Status status = engine.init();
     if (!status.ok()) {
         logError(std::string("init failed: ") + statusCodeName(status.code) + " " + status.message);
+        std::cout << "status=" << statusCodeName(status.code) << "\n"
+                  << "module=" << status.module << "\n"
+                  << "message=" << status.message << "\n";
+        return statusToExitCode(status.code);
+    }
+    status = engine.setConfig(options);
+    if (!status.ok()) {
+        logError(std::string("setConfig failed: ") + statusCodeName(status.code) + " " + status.message);
         std::cout << "status=" << statusCodeName(status.code) << "\n"
                   << "module=" << status.module << "\n"
                   << "message=" << status.message << "\n";
@@ -278,7 +286,7 @@ int main(int argc, char** argv)
             }
 
             const auto runStart = std::chrono::steady_clock::now();
-            FrameResult result = engine.run(manifestFrame.frame);
+            FrameResult result = engine.calc(manifestFrame.frame);
             const double runElapsedMs = std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - runStart).count();
             std::cout << formatFrameResultSummary(manifestFrame.frame.frameId, result);
@@ -337,7 +345,7 @@ int main(int argc, char** argv)
     }
 
     const auto runStart = std::chrono::steady_clock::now();
-    FrameResult result = engine.run(*frameToRun);
+    FrameResult result = engine.calc(*frameToRun);
     const double runElapsedMs = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - runStart).count();
     std::cout << formatFrameResultSummary(frameToRun->frameId, result);

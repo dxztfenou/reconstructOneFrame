@@ -18,90 +18,107 @@
 extern "C" {
 #endif
 
-#define ROF_ABI_MAJOR_V1 1U
-#define ROF_ABI_MINOR_V1 2U
+#define ROF_ABI_MAJOR 2U
+#define ROF_ABI_MINOR 0U
 
-#define ROF_STATUS_OK_V1 0
-#define ROF_STATUS_INVALID_ARGUMENT_V1 1
-#define ROF_STATUS_ABI_MISMATCH_V1 2
-#define ROF_STATUS_CONFIG_ERROR_V1 10
-#define ROF_STATUS_CALIBRATION_ERROR_V1 11
-#define ROF_STATUS_NOT_READY_V1 20
-#define ROF_STATUS_INPUT_ERROR_V1 30
-#define ROF_STATUS_PROCESSING_ERROR_V1 40
-#define ROF_STATUS_BUFFER_TOO_SMALL_V1 50
-#define ROF_STATUS_INTERNAL_ERROR_V1 100
+#define ROF_STATUS_OK 0
+#define ROF_STATUS_INVALID_ARGUMENT 1
+#define ROF_STATUS_ABI_MISMATCH 2
+#define ROF_STATUS_CONFIG_ERROR 10
+#define ROF_STATUS_CALIBRATION_ERROR 11
+#define ROF_STATUS_NOT_READY 20
+#define ROF_STATUS_INPUT_ERROR 30
+#define ROF_STATUS_PROCESSING_ERROR 40
+#define ROF_STATUS_BUFFER_TOO_SMALL 50
+#define ROF_STATUS_INTERNAL_ERROR 100
 
-#define ROF_SEVERITY_INFO_V1 0U
-#define ROF_SEVERITY_WARNING_V1 1U
-#define ROF_SEVERITY_ERROR_V1 2U
+#define ROF_SEVERITY_INFO 0U
+#define ROF_SEVERITY_WARNING 1U
+#define ROF_SEVERITY_ERROR 2U
 
-#define ROF_STATUS_FLAG_RETRIABLE_V1 (1U << 0U)
+#define ROF_STATUS_FLAG_RETRIABLE (1U << 0U)
 
-#define ROF_ELEMENT_UINT8_V1 1U
-#define ROF_ELEMENT_UINT16_V1 2U
-#define ROF_ELEMENT_FLOAT32_V1 3U
+#define ROF_ELEMENT_UINT8 1U
+#define ROF_ELEMENT_UINT16 2U
+#define ROF_ELEMENT_FLOAT32 3U
 
-#define ROF_MEMORY_HOST_V1 1U
+#define ROF_MEMORY_HOST 1U
 
-#define ROF_CAMERA_MODEL_INTRINSICS_3X3_V1 1U
-#define ROF_CAMERA_MODEL_REPROJECTION_Q_4X4_V1 2U
+#define ROF_CAMERA_MODEL_INTRINSICS_3X3 1U
+#define ROF_CAMERA_MODEL_REPROJECTION_Q_4X4 2U
 
-#define ROF_COORDINATE_SENSOR_INPUT_V1 1U
-#define ROF_COORDINATE_LEFT_CAMERA_MM_V1 2U
-#define ROF_COORDINATE_RECTIFIED_LEFT_IMAGE_V1 3U
-#define ROF_COORDINATE_CALIBRATION_INPUT_V1 4U
+#define ROF_COORDINATE_SENSOR_INPUT 1U
+#define ROF_COORDINATE_LEFT_CAMERA_MM 2U
+#define ROF_COORDINATE_RECTIFIED_LEFT_IMAGE 3U
+#define ROF_COORDINATE_CALIBRATION_INPUT 4U
 
-#define ROF_CAPTURE_PLAN_MAX_STRIPE_REQUIREMENTS_V1 8U
-#define ROF_CAPTURE_PLAN_MAX_AUXILIARY_FRAMES_V1 4U
+#define ROF_CAPTURE_PLAN_MAX_STRIPE_REQUIREMENTS 8U
+#define ROF_CAPTURE_PLAN_MAX_AUXILIARY_FRAMES 4U
 
-#define ROF_OUTPUT_DEPTH_V1 (1U << 0U)
-#define ROF_OUTPUT_NORMAL_V1 (1U << 1U)
-#define ROF_OUTPUT_COLOR_V1 (1U << 2U)
-#define ROF_OUTPUT_QUALITY_V1 (1U << 3U)
-#define ROF_OUTPUT_ALL_V1 \
-    (ROF_OUTPUT_DEPTH_V1 | ROF_OUTPUT_NORMAL_V1 | ROF_OUTPUT_COLOR_V1 | ROF_OUTPUT_QUALITY_V1)
+#define ROF_OUTPUT_DEPTH (1U << 0U)
+#define ROF_OUTPUT_NORMAL (1U << 1U)
+#define ROF_OUTPUT_COLOR (1U << 2U)
+#define ROF_OUTPUT_QUALITY (1U << 3U)
+#define ROF_OUTPUT_ALL (ROF_OUTPUT_DEPTH | ROF_OUTPUT_NORMAL | ROF_OUTPUT_COLOR | ROF_OUTPUT_QUALITY)
 
-#define ROF_CAPABILITY_CALLER_OWNED_OUTPUT_V1 (1ULL << 0U)
-#define ROF_CAPABILITY_FLOAT32_INPUT_V1 (1ULL << 1U)
-#define ROF_CAPABILITY_UINT8_INPUT_V1 (1ULL << 2U)
-#define ROF_CAPABILITY_CAPTURE_PLAN_V1 (1ULL << 3U)
-#define ROF_CAPABILITY_FRAME_FLAGS_V1 (1ULL << 4U)
-#define ROF_CAPABILITY_METAL_SCAN_MODE_V1 (1ULL << 5U)
-#define ROF_CAPABILITY_AI_SCAN_MODE_V1 (1ULL << 6U)
+#define ROF_CAPABILITY_CALLER_OWNED_OUTPUT (1ULL << 0U)
+#define ROF_CAPABILITY_FLOAT32_INPUT (1ULL << 1U)
+#define ROF_CAPABILITY_UINT8_INPUT (1ULL << 2U)
+#define ROF_CAPABILITY_CAPTURE_PLAN (1ULL << 3U)
+#define ROF_CAPABILITY_FRAME_FLAGS (1ULL << 4U)
+#define ROF_CAPABILITY_METAL_SCAN_MODE (1ULL << 5U)
+#define ROF_CAPABILITY_AI_SCAN_MODE (1ULL << 6U)
+#define ROF_CAPABILITY_INIT_SETCONFIG_CALC (1ULL << 7U)
 
-#define ROF_FRAME_FLAG_AI_SCAN_V1 (1U << 0U)
-#define ROF_FRAME_FLAG_METAL_SCAN_V1 (1U << 1U)
-#define ROF_FRAME_FLAG_ALL_V1 (ROF_FRAME_FLAG_AI_SCAN_V1 | ROF_FRAME_FLAG_METAL_SCAN_V1)
+#define ROF_FRAME_FLAG_AI_SCAN (1U << 0U)
+#define ROF_FRAME_FLAG_METAL_SCAN (1U << 1U)
+#define ROF_FRAME_FLAG_ALL (ROF_FRAME_FLAG_AI_SCAN | ROF_FRAME_FLAG_METAL_SCAN)
 
-#define ROF_FRAME_INPUT_V11_SIZE_V1 136U
+#define ROF_CONFIG_FLAG_DRY_RUN (1U << 0U)
+#define ROF_CONFIG_FLAG_DRY_RUN_NO_CALIB (1U << 1U)
+#define ROF_CONFIG_FLAG_WRITE_PLY (1U << 2U)
+#define ROF_CONFIG_FLAG_OUTPUT_PER_FRAME_SUBDIRECTORY (1U << 3U)
 
-typedef void* RofSessionHandle;
+typedef void* RofContextHandle;
 
-typedef struct RofStatusV1 {
+typedef struct RofStatus {
     uint32_t struct_size;
     int32_t code;
     uint32_t severity;
     uint32_t flags;
-} RofStatusV1;
+} RofStatus;
 
-typedef struct RofSessionConfigV1 {
+typedef struct RofRuntimeInitOptions {
+    uint32_t struct_size;
+    uint32_t runtime_flags;
+    const char* log_directory;
+    size_t log_directory_size;
+} RofRuntimeInitOptions;
+
+typedef struct RofConfigOptions {
     uint32_t struct_size;
     const char* config_path;
     size_t config_path_size;
     const char* calibration_path;
     size_t calibration_path_size;
+    const char* config_base_path;
+    size_t config_base_path_size;
+    const char* output_directory;
+    size_t output_directory_size;
+    const char* compare_legacy_ply_path;
+    size_t compare_legacy_ply_path_size;
     uint32_t output_mask;
-} RofSessionConfigV1;
+    uint32_t flags;
+} RofConfigOptions;
 
-typedef struct RofStripeRequirementV1 {
+typedef struct RofStripeRequirement {
     int32_t frequency_index;
     int32_t required_phase_steps;
     int32_t first_projector_index;
     int32_t reserved;
-} RofStripeRequirementV1;
+} RofStripeRequirement;
 
-typedef struct RofCapturePlanV1 {
+typedef struct RofCapturePlan {
     uint32_t struct_size;
     uint32_t input_width;
     uint32_t input_height;
@@ -114,12 +131,12 @@ typedef struct RofCapturePlanV1 {
     uint32_t input_coordinate_space;
     uint32_t max_in_flight_frames;
     uint32_t stripe_requirement_count;
-    RofStripeRequirementV1 stripe_requirements[ROF_CAPTURE_PLAN_MAX_STRIPE_REQUIREMENTS_V1];
+    RofStripeRequirement stripe_requirements[ROF_CAPTURE_PLAN_MAX_STRIPE_REQUIREMENTS];
     uint32_t auxiliary_frame_count;
-    int32_t auxiliary_projector_indices[ROF_CAPTURE_PLAN_MAX_AUXILIARY_FRAMES_V1];
-} RofCapturePlanV1;
+    int32_t auxiliary_projector_indices[ROF_CAPTURE_PLAN_MAX_AUXILIARY_FRAMES];
+} RofCapturePlan;
 
-typedef struct RofCameraModelV1 {
+typedef struct RofCameraModel {
     uint32_t struct_size;
     uint32_t model_type;
     uint32_t rows;
@@ -128,9 +145,9 @@ typedef struct RofCameraModelV1 {
     uint32_t image_height;
     uint32_t coordinate_space;
     double values[16];
-} RofCameraModelV1;
+} RofCameraModel;
 
-typedef struct RofImageStackViewV1 {
+typedef struct RofImageStackView {
     uint32_t struct_size;
     const void* data;
     size_t byte_size;
@@ -142,9 +159,9 @@ typedef struct RofImageStackViewV1 {
     uint32_t element_type;
     uint32_t memory_kind;
     uint32_t coordinate_space;
-} RofImageStackViewV1;
+} RofImageStackView;
 
-typedef struct RofMutableImageViewV1 {
+typedef struct RofMutableImageView {
     uint32_t struct_size;
     void* data;
     size_t capacity_bytes;
@@ -155,28 +172,28 @@ typedef struct RofMutableImageViewV1 {
     uint32_t channels;
     uint32_t element_type;
     uint32_t coordinate_space;
-} RofMutableImageViewV1;
+} RofMutableImageView;
 
-typedef struct RofFrameInputV1 {
+typedef struct RofCalcInput {
     uint32_t struct_size;
     uint64_t frame_id;
     uint64_t capture_timestamp_ns;
-    RofImageStackViewV1 left;
-    RofImageStackViewV1 right;
+    RofImageStackView left;
+    RofImageStackView right;
     uint32_t flags;
     uint32_t reserved;
-} RofFrameInputV1;
+} RofCalcInput;
 
-typedef struct RofFrameOutputV1 {
+typedef struct RofCalcOutput {
     uint32_t struct_size;
     uint32_t output_mask;
-    RofMutableImageViewV1 depth;
-    RofMutableImageViewV1 normal;
-    RofMutableImageViewV1 color;
-    RofMutableImageViewV1 quality;
-} RofFrameOutputV1;
+    RofMutableImageView depth;
+    RofMutableImageView normal;
+    RofMutableImageView color;
+    RofMutableImageView quality;
+} RofCalcOutput;
 
-typedef struct RofFrameMetricsV1 {
+typedef struct RofCalcMetrics {
     uint32_t struct_size;
     uint64_t frame_id;
     int32_t status_code;
@@ -184,57 +201,62 @@ typedef struct RofFrameMetricsV1 {
     uint32_t output_height;
     uint64_t point_count;
     double elapsed_ms;
-} RofFrameMetricsV1;
+} RofCalcMetrics;
 
-typedef int32_t (*RofCreateSessionFnV1)(
-    const RofSessionConfigV1* config,
-    RofSessionHandle* out_session,
-    RofStatusV1* out_status);
-typedef int32_t (*RofGetCapturePlanFnV1)(
-    RofSessionHandle session,
-    RofCapturePlanV1* out_plan,
-    RofStatusV1* out_status);
-typedef int32_t (*RofGetCameraModelFnV1)(
-    RofSessionHandle session,
-    RofCameraModelV1* out_model,
-    RofStatusV1* out_status);
-typedef int32_t (*RofProcessFrameFnV1)(
-    RofSessionHandle session,
-    const RofFrameInputV1* input,
-    RofFrameOutputV1* output,
-    RofFrameMetricsV1* out_metrics,
-    RofStatusV1* out_status);
-typedef int32_t (*RofCopyLastErrorFnV1)(
-    RofSessionHandle session,
+typedef int32_t (*RofInitFn)(
+    const RofRuntimeInitOptions* options,
+    RofContextHandle* out_context,
+    RofStatus* out_status);
+typedef int32_t (*RofSetConfigFn)(
+    RofContextHandle context,
+    const RofConfigOptions* config,
+    RofStatus* out_status);
+typedef int32_t (*RofGetCapturePlanFn)(
+    RofContextHandle context,
+    RofCapturePlan* out_plan,
+    RofStatus* out_status);
+typedef int32_t (*RofGetCameraModelFn)(
+    RofContextHandle context,
+    RofCameraModel* out_model,
+    RofStatus* out_status);
+typedef int32_t (*RofCalcFn)(
+    RofContextHandle context,
+    const RofCalcInput* input,
+    RofCalcOutput* output,
+    RofCalcMetrics* out_metrics,
+    RofStatus* out_status);
+typedef int32_t (*RofCopyLastErrorFn)(
+    RofContextHandle context,
     char* destination,
     size_t capacity,
     size_t* out_required_size);
-typedef int32_t (*RofDrainFnV1)(
-    RofSessionHandle session,
-    RofStatusV1* out_status);
-typedef void (*RofDestroySessionFnV1)(RofSessionHandle session);
+typedef int32_t (*RofShutdownFn)(
+    RofContextHandle context,
+    RofStatus* out_status);
+typedef void (*RofDestroyFn)(RofContextHandle context);
 
-typedef struct RofApiV1 {
+typedef struct RofApi {
     uint32_t struct_size;
     uint32_t abi_major;
     uint32_t abi_minor;
     uint32_t reserved;
     uint64_t capabilities;
     char plugin_id[32];
-    RofCreateSessionFnV1 create_session;
-    RofGetCapturePlanFnV1 get_capture_plan;
-    RofGetCameraModelFnV1 get_camera_model;
-    RofProcessFrameFnV1 process_frame;
-    RofCopyLastErrorFnV1 copy_last_error;
-    RofDrainFnV1 drain;
-    RofDestroySessionFnV1 destroy_session;
-} RofApiV1;
+    RofInitFn init;
+    RofSetConfigFn set_config;
+    RofGetCapturePlanFn get_capture_plan;
+    RofGetCameraModelFn get_camera_model;
+    RofCalcFn calc;
+    RofCopyLastErrorFn copy_last_error;
+    RofShutdownFn shutdown;
+    RofDestroyFn destroy;
+} RofApi;
 
 ROF_C_API int32_t rof_get_api(
     uint32_t requested_abi_major,
     uint32_t requested_abi_minor,
     uint32_t host_table_size,
-    RofApiV1* out_api);
+    RofApi* out_api);
 
 #ifdef __cplusplus
 }

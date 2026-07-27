@@ -29,8 +29,10 @@ int main()
     InitOptions options;
     options.configPath = "config/reconsAlgPara.json";
     options.calibrationPath = "tests/data/phase2_valid_calibResult.json";
-    status = engine.init(options);
-    require(status.ok(), "engine init must succeed");
+    status = engine.init();
+    require(status.ok(), "engine runtime init must succeed");
+    status = engine.setConfig(options);
+    require(status.ok(), "engine setConfig must succeed");
 
     status = engine.describe(descriptor);
     require(status.ok(), "initialized engine must provide a descriptor");

@@ -200,9 +200,10 @@ public:
     ReconstructEngine(ReconstructEngine&&) noexcept;
     ReconstructEngine& operator=(ReconstructEngine&&) noexcept;
 
-    Status init(const InitOptions& options);
+    Status init();
+    Status setConfig(const InitOptions& options);
     Status describe(EngineDescriptor& descriptor) const;
-    FrameResult run(const StripeFrameGroup& frame);
+    FrameResult calc(const StripeFrameGroup& frame);
     void shutdown();
 
 private:

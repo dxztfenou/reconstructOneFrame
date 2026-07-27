@@ -25,7 +25,7 @@ public:
                       CalibrationModel calibration,
                       PipelineOptions options);
 
-    FrameResult run(const StripeFrameGroup& frame) const;
+    FrameResult calc(const StripeFrameGroup& frame) const;
     void shutdown() noexcept;
 
 private:

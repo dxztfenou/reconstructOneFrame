@@ -88,10 +88,12 @@ int main()
     options.dryRun = true;
     options.dryRunNoCalib = true;
 
-    Status status = engine.init(options);
-    require(status.ok(), "expected engine init to pass with dry-run-no-calib");
+    Status status = engine.init();
+    require(status.ok(), "expected engine runtime init to pass");
+    status = engine.setConfig(options);
+    require(status.ok(), "expected engine setConfig to pass with dry-run-no-calib");
 
-    FrameResult result = engine.run(makeFrame());
+    FrameResult result = engine.calc(makeFrame());
     require(result.status.ok(), "expected pipeline dry-run to pass");
     require(!result.depthComputed, "depth must remain notComputed");
     require(!result.normalComputed, "normal must remain notComputed");

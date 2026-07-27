@@ -13,7 +13,8 @@ struct ReconstructEngine::Impl {
     ReconsConfig config;
     CalibrationModel calibration;
     SingleFramePipeline pipeline;
-    bool initialized = false;
+    bool runtimeInitialized = false;
+    bool configured = false;
 };
 
 ReconstructEngine::ReconstructEngine()
@@ -29,11 +30,23 @@ ReconstructEngine::ReconstructEngine(ReconstructEngine&& other) noexcept
 ReconstructEngine& ReconstructEngine::operator=(ReconstructEngine&& other) noexcept
     = default;
 
-Status ReconstructEngine::init(const InitOptions& options)
+Status ReconstructEngine::init()
 {
+    impl_->pipeline.shutdown();
+    impl_->runtimeInitialized = true;
+    impl_->configured = false;
+    return {};
+}
+
+Status ReconstructEngine::setConfig(const InitOptions& options)
+{
+    if (!impl_->runtimeInitialized) {
+        return {StatusCode::InternalError, "ReconstructEngine", "engine runtime is not initialized"};
+    }
+
     Status status = loadReconsConfigWithBase(options.configBasePath, options.configPath, impl_->config);
     if (!status.ok()) {
-        impl_->initialized = false;
+        impl_->configured = false;
         return status;
     }
 
@@ -43,7 +56,7 @@ Status ReconstructEngine::init(const InitOptions& options)
     if (!options.dryRunNoCalib) {
         status = loadCalibrationResultJson(calibrationPath, impl_->calibration);
         if (!status.ok()) {
-            impl_->initialized = false;
+            impl_->configured = false;
             return status;
         }
     }
@@ -57,14 +70,14 @@ Status ReconstructEngine::init(const InitOptions& options)
     pipelineOptions.outputDirectory = options.outputDirectory;
     pipelineOptions.compareLegacyPlyPath = options.compareLegacyPlyPath;
     status = impl_->pipeline.initialize(impl_->config, impl_->calibration, pipelineOptions);
-    impl_->initialized = status.ok();
+    impl_->configured = status.ok();
     return status;
 }
 
 Status ReconstructEngine::describe(EngineDescriptor& descriptor) const
 {
-    if (!impl_->initialized) {
-        return {StatusCode::InternalError, "ReconstructEngine", "engine is not initialized"};
+    if (!impl_->runtimeInitialized || !impl_->configured) {
+        return {StatusCode::InternalError, "ReconstructEngine", "engine config is not ready"};
     }
 
     EngineDescriptor value;
@@ -116,20 +129,20 @@ Status ReconstructEngine::describe(EngineDescriptor& descriptor) const
     return {};
 }
 
-FrameResult ReconstructEngine::run(const StripeFrameGroup& frame)
+FrameResult ReconstructEngine::calc(const StripeFrameGroup& frame)
 {
     FrameResult result;
-    if (!impl_->initialized) {
-        result.status = {StatusCode::InternalError, "ReconstructEngine", "engine is not initialized"};
+    if (!impl_->runtimeInitialized || !impl_->configured) {
+        result.status = {StatusCode::InternalError, "ReconstructEngine", "engine config is not ready"};
         return result;
     }
-    return impl_->pipeline.run(frame);
+    return impl_->pipeline.calc(frame);
 }
 
 void ReconstructEngine::shutdown()
 {
     impl_->pipeline.shutdown();
-    impl_->initialized = false;
+    impl_->configured = false;
 }
 
 } // namespace reconstruct_one_frame
